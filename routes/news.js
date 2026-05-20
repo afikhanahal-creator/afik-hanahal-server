@@ -3,24 +3,39 @@ import { supabase } from '../lib/supabase.js'
 
 const router = Router()
 
-// ── Israeli real-estate RSS sources (no auth, no blocking) ─────────────────
+// trusted:true = dedicated real-estate feed, skip keyword filter
 const RSS_SOURCES = [
-  { name: 'Ynet נדל"ן',       url: 'https://www.ynet.co.il/Integration/StoryRss2.aspx?id=3082' },
-  { name: 'Calcalist נדל"ן',  url: 'https://www.calcalist.co.il/rss/AjaxPage,7340,L-4,00.html' },
-  { name: 'Globes נדל"ן',     url: 'https://www.globes.co.il/webservice/rss/rssfeeder.asmx/FeederNode?iID=1111' },
-  { name: 'Walla! נדל"ן',     url: 'https://rss.walla.co.il/feed/22' },
-  { name: 'TheMarker נדל"ן',  url: 'https://www.themarker.com/cmlink/1.4476' },
-  { name: 'Bizportal נדל"ן',  url: 'https://www.bizportal.co.il/rss/realEstate' },
+  { name: 'Google נדל"ן',  url: 'https://news.google.com/rss/search?q=%D7%A0%D7%93%D7%9C%D7%9F+%D7%99%D7%A9%D7%A8%D7%90%D7%9C&hl=he&gl=IL&ceid=IL:he', trusted: true },
+  { name: 'Google דיור',   url: 'https://news.google.com/rss/search?q=%D7%9E%D7%97%D7%99%D7%A8%D7%99+%D7%93%D7%99%D7%A8%D7%95%D7%AA+%D7%99%D7%A9%D7%A8%D7%90%D7%9C&hl=he&gl=IL&ceid=IL:he', trusted: true },
+  { name: 'Ynet נדל"ן',    url: 'https://www.ynet.co.il/Integration/StoryRss8315.xml' },
+  { name: 'Ynet כלכלה',    url: 'https://www.ynet.co.il/Integration/StoryRss6.xml' },
+  { name: 'Globes נדל"ן',  url: 'https://www.globes.co.il/webservice/rss/rssfeeder.asmx/FeederKeyword?iID=1385', trusted: true },
 ]
+
+const RE_FILTER = /נדל|דיר[הות]|דיור|שכיר[ות]|שוכר|משכיר|קרק[ע]|מגרש|משכנת|פינוי.?בינוי|התחדשות עירונית|מקרקעין|טאבו|קבלן|יזם.?נד|בנייה|בניין|תמ.?א|מגורים|שרון|כפר.?סבא|רעננה|נתניה|הוד.השרון|שוק הד|מחירי ד|רכישת ד|real.?estate|mortgage|housing/i
+function isRealEstate(title) { return RE_FILTER.test(title) }
+
+function isArticleImage(url) {
+  if (!url) return false
+  const u = url.toLowerCase()
+  return !u.includes('logo') && !u.includes('default') && !u.includes('placeholder')
+    && !u.includes('favicon') && !u.includes('generic')
+}
+
+function deduplicateImages(articles) {
+  const imgCount = {}
+  articles.forEach(a => { if (a.image) imgCount[a.image] = (imgCount[a.image] || 0) + 1 })
+  return articles.map(a => ({ ...a, image: (a.image && imgCount[a.image] === 1) ? a.image : '' }))
+}
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept': 'application/xml,text/xml,application/rss+xml,*/*;q=0.8',
   'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8',
 }
 
 // ── Parse RSS/Atom XML without external libs ───────────────────────────────
-function parseRSS(xml, sourceName) {
+function parseRSS(xml, sourceName, trusted = false) {
   const items = []
   const itemRe = /<item[^>]*>([\s\S]*?)<\/item>/g
   let m
@@ -33,17 +48,29 @@ function parseRSS(xml, sourceName) {
     const link     = g(/<link[^>]*>\s*(https?:\/\/[^\s<]+)\s*<\/link>/)
                || g(/<guid[^>]*>(https?:\/\/[^\s<]+)<\/guid>/)
     const pubDate  = g(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/)
-    const imgEnc   = g(/<enclosure[^>]+url=["']([^"']+)["']/)
     const imgMedia = g(/<media:content[^>]+url=["']([^"']+)["']/)
                || g(/<media:thumbnail[^>]+url=["']([^"']+)["']/)
+    const imgEnc   = g(/<enclosure[^>]+url=["']([^"']+)["']/)
     const imgDesc  = (c.match(/<description[^>]*>[\s\S]*?<img[^>]+src=["']([^"']+)["']/) || [])[1] || ''
 
     if (!rawTitle || !link) continue
     const title = rawTitle.replace(/<[^>]+>/g, '')
-    const image = imgMedia || imgEnc || imgDesc || ''
+    const rawImg = imgMedia || imgEnc || imgDesc || ''
+    const image = isArticleImage(rawImg) ? rawImg : ''
     const date  = pubDate ? new Date(pubDate) : new Date()
 
-    items.push({ id: link, title, url: link, link, image, source: sourceName,
+    let articleUrl = link
+    let displaySource = sourceName
+    if (link.includes('news.google.com')) {
+      const rawDesc = (c.match(/<description[^>]*>([\s\S]*?)<\/description>/) || [])[1] || ''
+      const decoded = rawDesc.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&amp;/g,'&')
+      const realHref = decoded.match(/href=["']?(https?:\/\/(?!news\.google)[^"'\s>]+)/i)
+      if (realHref) articleUrl = realHref[1]
+      const gnSrc = g(/<source[^>]*>([^<]+)<\/source>/)
+      if (gnSrc) displaySource = gnSrc
+    }
+
+    items.push({ id: link, title, url: articleUrl, link, image, source: displaySource, trusted,
       publishedAt: date.toISOString(), date })
   }
   return items
@@ -78,21 +105,22 @@ router.get('/feed', async (req, res) => {
 
   // Fetch all RSS sources in parallel
   const results = await Promise.allSettled(
-    RSS_SOURCES.map(async src => {
+    RSS_SOURCES.map(async ({ name, url, trusted = false }) => {
       try {
-        const r = await fetch(src.url, { headers: HEADERS, signal: AbortSignal.timeout(12000) })
-        if (!r.ok) return []
-        const xml = await r.text()
-        return parseRSS(xml, src.name)
-      } catch { return [] }
+        const r = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(12000) })
+        if (!r.ok) { console.warn(`[news] ${name} ${r.status}`); return [] }
+        return parseRSS(await r.text(), name, trusted)
+      } catch (e) { console.warn(`[news] ${name}:`, e.message); return [] }
     })
   )
 
-  // Merge + deduplicate by title
+  // Merge + deduplicate by title, filter to real estate only
   const seen = new Set()
   let articles = results
     .flatMap(r => r.status === 'fulfilled' ? r.value : [])
     .filter(a => {
+      if (!a.title || !a.link) return false
+      if (!a.trusted && !isRealEstate(a.title)) return false
       const key = a.title.replace(/\s+/g,'').slice(0, 30)
       if (seen.has(key)) return false
       seen.add(key); return true
@@ -108,15 +136,22 @@ router.get('/feed', async (req, res) => {
     return res.json(data || [])
   }
 
-  // Enrich with og:image where missing (parallel, max 25)
-  const needImg = articles.filter(a => !a.image).slice(0, 25)
-  const ogResults = await Promise.allSettled(needImg.map(a => fetchOGImage(a.url)))
+  // Clear duplicate images (source logos shared across multiple articles)
+  articles = deduplicateImages(articles)
 
-  let ogIdx = 0
+  // Enrich with og:image where missing (parallel, max 30, direct-source first)
+  const withoutImg = articles.filter(a => !a.image)
+  const needImg = [
+    ...withoutImg.filter(a => !a.link.includes('news.google.com')),
+    ...withoutImg.filter(a =>  a.link.includes('news.google.com')),
+  ].slice(0, 30)
+  const ogResults = await Promise.allSettled(needImg.map(a => fetchOGImage(a.url)))
+  const ogMap = new Map(needImg.map((a, i) => [a.id, ogResults[i]]))
   articles = articles.map(a => {
-    if (!a.image) {
-      const r = ogResults[ogIdx++]
-      return { ...a, image: (r?.status === 'fulfilled' ? r.value : '') || '' }
+    if (!a.image && ogMap.has(a.id)) {
+      const r = ogMap.get(a.id)
+      const ogImg = (r?.status === 'fulfilled' ? r.value : '') || ''
+      return { ...a, image: isArticleImage(ogImg) ? ogImg : '' }
     }
     return a
   })
