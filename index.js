@@ -4,6 +4,7 @@ import cors from 'cors'
 import propertiesRouter from './routes/properties.js'
 import contactsRouter  from './routes/contacts.js'
 import newsRouter      from './routes/news.js'
+import statsRouter     from './routes/stats.js'
 import whatsappRouter  from './routes/whatsapp.js'
 import capiRouter      from './routes/capi.js'
 import aiRouter        from './routes/ai.js'
@@ -31,6 +32,7 @@ app.get('/health', (_, res) => res.json({ status: 'ok', ts: Date.now() }))
 app.use('/api/properties', propertiesRouter)
 app.use('/api/contacts',   contactsRouter)
 app.use('/api/news',       newsRouter)
+app.use('/api/stats',      statsRouter)
 app.use('/api/whatsapp',   whatsappRouter)
 app.use('/api/capi',       capiRouter)
 app.use('/api/ai',         aiRouter)

@@ -67,6 +67,25 @@ CREATE INDEX IF NOT EXISTS news_lang_idx      ON news_articles (lang, archived);
 CREATE INDEX IF NOT EXISTS news_published_idx ON news_articles (published_at DESC);
 
 
+-- 4. Site configuration (stats counters, sharon city data)
+--    One row per key ('stats', 'sharon'). Value is a JSON array.
+CREATE TABLE IF NOT EXISTS site_config (
+  key        TEXT        PRIMARY KEY,
+  value      JSONB       NOT NULL DEFAULT '[]',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE OR REPLACE FUNCTION site_config_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
+$$;
+
+DROP TRIGGER IF EXISTS site_config_updated_at ON site_config;
+CREATE TRIGGER site_config_updated_at
+  BEFORE UPDATE ON site_config
+  FOR EACH ROW EXECUTE FUNCTION site_config_updated_at();
+
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Row-Level Security (RLS)
 -- The server uses the service-role key which bypasses RLS, so these policies
@@ -75,6 +94,11 @@ CREATE INDEX IF NOT EXISTS news_published_idx ON news_articles (published_at DES
 ALTER TABLE properties    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE contacts      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE news_articles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_config   ENABLE ROW LEVEL SECURITY;
+
+-- Allow public reads for site_config (stats are shown publicly on the website)
+CREATE POLICY "Public can read site_config"
+  ON site_config FOR SELECT USING (true);
 
 -- Allow public reads for published properties
 CREATE POLICY "Public can read published properties"
