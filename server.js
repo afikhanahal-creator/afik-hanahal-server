@@ -1,13 +1,3 @@
-const express = require('express');
-const app = express();
-
-app.use(express.json());
-
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'OK' });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Entry-point alias — Render uses "node server.js" by default.
+// All real logic lives in index.js.
+import './index.js'
