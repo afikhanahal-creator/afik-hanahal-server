@@ -13,7 +13,7 @@ function requireAdmin(req, res, next) {
 
 // POST /api/contacts — save a lead (public endpoint)
 router.post('/', async (req, res) => {
-  const { name, phone, email, msg, propTitle, propLocation, source } = req.body
+  const { name, phone, email, msg, propTitle, propLocation, source, followupMessage } = req.body
   if (!name && !phone) return res.status(400).json({ error: 'name or phone required' })
 
   const record = {
@@ -42,7 +42,7 @@ router.post('/', async (req, res) => {
   // Respond immediately — notifications fire in background
   res.status(201).json({ ok: true })
 
-  const lead = { name, phone, email, msg, propTitle, propLocation, source }
+  const lead = { name, phone, email, msg, propTitle, propLocation, source, followupMessage }
 
   // 2. WhatsApp follow-up — delayed by WA_FOLLOWUP_DELAY_MIN (default 2 min)
   const delayMin = Number(process.env.WA_FOLLOWUP_DELAY_MIN) || 2
