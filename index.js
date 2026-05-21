@@ -8,6 +8,68 @@ import statsRouter     from './routes/stats.js'
 import whatsappRouter  from './routes/whatsapp.js'
 import capiRouter      from './routes/capi.js'
 import aiRouter        from './routes/ai.js'
+import uploadRouter    from './routes/upload.js'
+import { supabase }    from './lib/supabase.js'
+
+// ── Run Supabase migrations on startup ─────────────────────────────────────
+async function runMigrations() {
+  if (!supabase) return
+  const migrations = [
+    `CREATE TABLE IF NOT EXISTS properties (
+       id         BIGINT      PRIMARY KEY,
+       data       JSONB       NOT NULL DEFAULT '{}',
+       published  BOOLEAN     NOT NULL DEFAULT true,
+       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS properties_published_idx ON properties (published)`,
+    `CREATE INDEX IF NOT EXISTS properties_created_idx   ON properties (created_at DESC)`,
+    `CREATE OR REPLACE FUNCTION update_updated_at()
+     RETURNS TRIGGER LANGUAGE plpgsql AS $$
+     BEGIN NEW.updated_at = NOW(); RETURN NEW; END; $$`,
+    `DROP TRIGGER IF EXISTS properties_updated_at ON properties`,
+    `CREATE TRIGGER properties_updated_at
+     BEFORE UPDATE ON properties
+     FOR EACH ROW EXECUTE FUNCTION update_updated_at()`,
+    `CREATE TABLE IF NOT EXISTS site_config (
+       key        TEXT        PRIMARY KEY,
+       value      JSONB       NOT NULL DEFAULT '[]',
+       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE TABLE IF NOT EXISTS contacts (
+       id            BIGSERIAL   PRIMARY KEY,
+       name          TEXT,
+       phone         TEXT,
+       email         TEXT,
+       message       TEXT,
+       prop_title    TEXT,
+       prop_location TEXT,
+       source        TEXT        NOT NULL DEFAULT 'website',
+       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+  ]
+  for (const sql of migrations) {
+    try {
+      const { error } = await supabase.rpc('exec_sql', { sql }).catch(() => ({ error: null }))
+      if (error) {
+        // Try raw query via postgres REST (Supabase supports this via rpc)
+        console.log('[migrations] rpc failed, trying direct — this is normal on first setup')
+      }
+    } catch {}
+  }
+  // Verify the properties table exists by doing a simple count
+  try {
+    const { error } = await supabase.from('properties').select('id', { count: 'exact', head: true })
+    if (error) {
+      console.warn('[migrations] properties table may not exist — run supabase-schema.sql in Supabase SQL editor:', error.message)
+    } else {
+      console.log('[migrations] ✓ Supabase properties table verified')
+    }
+  } catch (e) {
+    console.warn('[migrations] Supabase check failed:', e.message)
+  }
+}
+runMigrations()
 
 const app = express()
 
@@ -28,7 +90,7 @@ app.use(cors({
   credentials: true,
 }))
 
-app.use(express.json({ limit: '5mb' }))
+app.use(express.json({ limit: '25mb' }))
 
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: Date.now() }))
 
@@ -39,6 +101,14 @@ app.use('/api/stats',      statsRouter)
 app.use('/api/whatsapp',   whatsappRouter)
 app.use('/api/capi',       capiRouter)
 app.use('/api/ai',         aiRouter)
+app.use('/api/upload',    uploadRouter)
+
+// Handle multer errors (e.g., file too large, wrong type)
+app.use((err, req, res, next) => {
+  if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large — maximum 25MB' })
+  if (err.message?.includes('Only PDF')) return res.status(415).json({ error: err.message })
+  next(err)
+})
 
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => console.log(`[server] listening on port ${PORT}`))

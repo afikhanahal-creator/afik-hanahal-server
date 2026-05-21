@@ -26,16 +26,20 @@ router.get('/', async (req, res) => {
       if (!admin) query = query.eq('published', true)
       const { data, error } = await query.order('created_at', { ascending: false })
       if (!error) {
-        return res.json(data.map(row => ({ ...row.data, id: row.id, published: row.published })))
+        const rows = data.map(row => ({ ...row.data, id: row.id, published: row.published }))
+        // Keep memory in sync so restarts serve stale data while re-fetching
+        if (admin) memStore = [...rows]
+        return res.json(rows)
       }
-      console.warn('[properties] Supabase error, falling back to memory:', error.message)
+      console.error('[properties] Supabase GET error:', error.message, error.details || '')
     } catch (e) {
-      console.warn('[properties] Supabase unreachable, falling back to memory:', e.message)
+      console.error('[properties] Supabase GET exception:', e.message)
     }
   }
 
   // In-memory fallback
-  return res.json(memStore.filter(p => admin || p.published))
+  console.warn('[properties] Serving %d props from memory (Supabase unavailable)', memStore.length)
+  return res.json(memStore.filter(p => admin || p.published !== false))
 })
 
 // POST /api/properties/bulk — replace entire property list (admin)
@@ -47,37 +51,46 @@ router.post('/bulk', requireAdmin, async (req, res) => {
     try {
       if (props.length > 0) {
         const rows = props.map(p => ({
-          id:        p.id,
+          id:        Number(p.id) || p.id,   // coerce to number when possible
           data:      p,
           published: !!p.published,
         }))
+
         const { error: upsertErr } = await supabase
           .from('properties')
           .upsert(rows, { onConflict: 'id' })
         if (upsertErr) throw upsertErr
 
-        const ids = props.map(p => p.id).filter(Boolean)
-        const { error: delErr } = await supabase
-          .from('properties')
-          .delete()
-          .not('id', 'in', `(${ids.join(',')})`)
-        if (delErr) throw delErr
+        // Delete rows no longer in the list
+        const ids = rows.map(r => r.id)
+        if (ids.length > 0) {
+          // Build a comma-separated list for the NOT IN filter
+          const idList = ids.join(',')
+          const { error: delErr } = await supabase
+            .from('properties')
+            .delete()
+            .not('id', 'in', `(${idList})`)
+          if (delErr) console.warn('[properties] delete-orphans error:', delErr.message)
+        }
       } else {
-        const { error } = await supabase.from('properties').delete().neq('id', 0)
+        // Empty array — wipe all
+        const { error } = await supabase.from('properties').delete().gte('id', 0)
         if (error) throw error
       }
 
-      memStore = [...props] // keep memory in sync
+      memStore = [...props]
+      console.log('[properties] Saved %d props to Supabase', props.length)
       return res.json({ ok: true, count: props.length })
     } catch (e) {
-      console.warn('[properties] Supabase write failed, falling back to memory:', e.message)
+      console.error('[properties] Supabase WRITE FAILED:', e.message, e.details || '', e.hint || '')
+      // Fall through to memory-only fallback
     }
   }
 
-  // In-memory fallback
+  // In-memory fallback — data survives until next restart only
   memStore = [...props]
-  console.warn('[properties] Saved %d props to memory only (Supabase not configured)', props.length)
-  return res.json({ ok: true, count: props.length, warning: 'Supabase not configured — memory only, lost on restart' })
+  console.warn('[properties] Saved %d props to MEMORY ONLY — Supabase not configured or failed', props.length)
+  return res.json({ ok: true, count: props.length, warning: 'Supabase not available — memory only, data lost on restart' })
 })
 
 export default router
