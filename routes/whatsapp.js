@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { saveChatMessage } from '../lib/chats.js'
 
 const router = Router()
 
@@ -70,8 +71,10 @@ async function processWebhook(body) {
         if (!from || !text) continue
 
         await markRead(msgId)
+        await saveChatMessage(from, 'in', text).catch(() => {})
         const reply = await getAIResponse(text)
         await sendWAMessage(from, reply)
+        await saveChatMessage(from, 'out', reply).catch(() => {})
         console.log(`[WA] Replied to ${from}: ${reply.slice(0, 80)}...`)
       }
     }

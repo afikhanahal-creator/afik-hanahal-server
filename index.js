@@ -9,6 +9,7 @@ import whatsappRouter  from './routes/whatsapp.js'
 import capiRouter      from './routes/capi.js'
 import aiRouter        from './routes/ai.js'
 import uploadRouter    from './routes/upload.js'
+import chatsRouter     from './routes/chats.js'
 import { supabase }    from './lib/supabase.js'
 
 // ── Run Supabase migrations on startup ─────────────────────────────────────
@@ -47,6 +48,16 @@ async function runMigrations() {
        source        TEXT        NOT NULL DEFAULT 'website',
        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
      )`,
+    `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS lead_status TEXT DEFAULT 'new'`,
+    `CREATE TABLE IF NOT EXISTS chats (
+       id         BIGSERIAL   PRIMARY KEY,
+       phone      TEXT        NOT NULL,
+       direction  TEXT        NOT NULL DEFAULT 'out',
+       message    TEXT        NOT NULL,
+       status     TEXT        NOT NULL DEFAULT 'sent',
+       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS chats_phone_idx ON chats (phone, created_at DESC)`,
   ]
   for (const sql of migrations) {
     try {
@@ -102,6 +113,7 @@ app.use('/api/whatsapp',   whatsappRouter)
 app.use('/api/capi',       capiRouter)
 app.use('/api/ai',         aiRouter)
 app.use('/api/upload',    uploadRouter)
+app.use('/api/chats',     chatsRouter)
 
 // Handle multer errors (e.g., file too large, wrong type)
 app.use((err, req, res, next) => {
