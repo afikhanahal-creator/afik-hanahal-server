@@ -55,6 +55,19 @@ router.post('/', async (req, res) => {
   sendAdminEmail(lead).catch(e => console.error('[email notification]', e.message))
 })
 
+// POST /api/contacts/test-wa — admin only: immediately send a WA test and return result
+router.post('/test-wa', requireAdmin, async (req, res) => {
+  const phone = req.body?.phone || '0559811814'
+  const lead = { name: 'בדיקה', phone, msg: 'הודעת בדיקה', propTitle: '', propLocation: '' }
+  try {
+    await sendWAFollowUp(lead)
+    return res.json({ ok: true, sentTo: phone })
+  } catch (e) {
+    console.error('[test-wa]', e.message)
+    return res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
 // GET /api/contacts — admin only
 router.get('/', requireAdmin, async (req, res) => {
   try {
