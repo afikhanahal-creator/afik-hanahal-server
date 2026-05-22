@@ -58,6 +58,18 @@ async function runMigrations() {
        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
      )`,
     `CREATE INDEX IF NOT EXISTS chats_phone_idx ON chats (phone, created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS news_articles (
+       id           TEXT        PRIMARY KEY,
+       title        TEXT        NOT NULL,
+       url          TEXT,
+       image        TEXT,
+       source       TEXT,
+       published_at TIMESTAMPTZ,
+       lang         TEXT        NOT NULL DEFAULT 'he',
+       archived     BOOLEAN     NOT NULL DEFAULT false,
+       created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS news_articles_lang_idx ON news_articles (lang, published_at DESC)`,
   ]
   for (const sql of migrations) {
     try {
@@ -122,7 +134,8 @@ app.use((err, req, res, next) => {
     return res.status(413).json({ error: `File too large — maximum ${limit}` })
   }
   if (err.message?.includes('Only PDF') || err.message?.includes('Only video')) return res.status(415).json({ error: err.message })
-  next(err)
+  console.error('[server error]', err.message || err)
+  return res.status(500).json({ error: err.message || 'Server error' })
 })
 
 const PORT = process.env.PORT || 3001
