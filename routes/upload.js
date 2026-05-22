@@ -34,15 +34,22 @@ function isAdmin(req) {
 }
 
 async function ensureBucket(name, opts = {}) {
-  try {
-    const { data: buckets } = await supabase.storage.listBuckets()
-    if (!buckets?.find(b => b.name === name)) {
-      await supabase.storage.createBucket(name, { public: true, ...opts })
-      console.log(`[upload] created bucket ${name}`)
-    }
-  } catch (e) {
-    console.warn(`[upload] bucket check failed for ${name}:`, e.message)
+  const { data: buckets, error: listErr } = await supabase.storage.listBuckets()
+  if (listErr) {
+    console.warn(`[upload] listBuckets failed:`, listErr.message)
+    return // may still exist — let the upload attempt proceed
   }
+  if (buckets?.find(b => b.name === name)) return // already exists
+
+  const { error: createErr } = await supabase.storage.createBucket(name, { public: true, ...opts })
+  if (createErr) {
+    console.error(`[upload] createBucket '${name}' failed:`, createErr.message)
+    throw new Error(
+      `Storage bucket "${name}" לא נמצא ולא ניתן ליצור אותו אוטומטית (${createErr.message}). ` +
+      `יש ליצור אותו ידנית בלוח הבקרה של Supabase: Storage → New bucket → "${name}" (public).`
+    )
+  }
+  console.log(`[upload] created bucket ${name}`)
 }
 
 // POST /api/upload/pdf
