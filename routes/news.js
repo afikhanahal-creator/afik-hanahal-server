@@ -13,6 +13,8 @@ const RSS_SOURCES = [
   { name: 'TheMarker נדל"ן',   url: 'https://www.themarker.com/cmlink/1.2-rss',                                                                                             trusted: true  },
   { name: 'Mako נדל"ן',       url: 'https://rss.mako.co.il/rss/31750a2610f26110VgnVCM1000005201000aRCRD.xml',                                                              trusted: true  },
   { name: 'Walla כלכלה',      url: 'https://rss.walla.co.il/feed/6',                                                                                                       trusted: false },
+  { name: 'מעריב נדל"ן',      url: 'https://www.maariv.co.il/rss/rssfeedsinglkategoriya,7213.xml',                                                                          trusted: true  },
+  { name: 'ביזפורטל נדל"ן',   url: 'https://www.bizportal.co.il/rss/feeds/realstate.xml',                                                                                   trusted: true  },
   // Google News Hebrew searches — no images but ensure Hebrew content breadth
   { name: 'Google נדל"ן',     url: 'https://news.google.com/rss/search?q=%D7%A0%D7%93%D7%9C%D7%9F+%D7%99%D7%A9%D7%A8%D7%90%D7%9C&hl=he&gl=IL&ceid=IL:he',              trusted: true  },
   { name: 'Google דיור',      url: 'https://news.google.com/rss/search?q=%D7%9E%D7%97%D7%99%D7%A8%D7%99+%D7%93%D7%99%D7%A8%D7%95%D7%AA+%D7%99%D7%A9%D7%A8%D7%90%D7%9C&hl=he&gl=IL&ceid=IL:he', trusted: true },
@@ -59,12 +61,25 @@ function parseRSS(xml, sourceName, trusted = false) {
     const imgMedia = g(/<media:content[^>]+url=["']([^"']+)["']/)
                || g(/<media:thumbnail[^>]+url=["']([^"']+)["']/)
     const imgEnc   = g(/<enclosure[^>]+url=["']([^"']+)["']/)
-    const imgDesc  = (c.match(/<description[^>]*>[\s\S]*?<img[^>]+src=["']([^"']+)["']/) || [])[1] || ''
+
+    // description may be CDATA or entity-encoded HTML — decode before matching <img>
+    const rawDesc = (c.match(/<description[^>]*>([\s\S]*?)<\/description>/) || [])[1] || ''
+    const descDecoded = rawDesc
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+      .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&amp;/g,'&')
+    const imgDesc = (descDecoded.match(/<img[^>]+src=["']([^"']+)["']/) || [])[1] || ''
+
+    // content:encoded — used by WordPress-based sites (TheMarker, Calcalist, Maariv)
+    const rawEnc = (c.match(/<content:encoded[^>]*>([\s\S]*?)<\/content:encoded>/) || [])[1] || ''
+    const encDecoded = rawEnc
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+      .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&amp;/g,'&')
+    const imgContent = (encDecoded.match(/<img[^>]+src=["']([^"']+)["']/) || [])[1] || ''
 
     if (!rawTitle || !link) continue
     const title = rawTitle.replace(/<[^>]+>/g, '')
     // Google News media:thumbnail/content is a source-branded card, not the real article image
-    const rawImg = link.includes('news.google.com') ? '' : (imgMedia || imgEnc || imgDesc || '')
+    const rawImg = link.includes('news.google.com') ? '' : (imgMedia || imgEnc || imgDesc || imgContent || '')
     const image = isArticleImage(rawImg) ? rawImg : ''
     const date  = pubDate ? new Date(pubDate) : new Date()
 
@@ -88,17 +103,31 @@ function parseRSS(xml, sourceName, trusted = false) {
 // ── Fetch og:image server-side (no CORS issues) ───────────────────────────
 async function fetchOGImage(url) {
   try {
-    const r = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(7000), redirect: 'follow' })
+    let domain = ''
+    try { domain = new URL(url).hostname } catch {}
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': domain ? `https://${domain}/` : '',
+        'Cache-Control': 'no-cache',
+      },
+      signal: AbortSignal.timeout(8000),
+      redirect: 'follow',
+    })
     if (!r.ok) return ''
-    // If redirect landed on a Google domain, we'd only get their site icon — skip
+    // If redirect landed on a Google domain, skip
     try { if (new URL(r.url).hostname.includes('google.com')) return '' } catch {}
     const html = await r.text()
-    return (
-      (html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
-       html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
-       html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i)
-      )?.[1] || ''
-    )
+    const img = (
+      html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
+      html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]+property=["']og:image:secure_url["'][^>]+content=["']([^"']+)["']/i)
+    )?.[1] || ''
+    return img.replace(/&amp;/g,'&').replace(/&quot;/g,'"')
   } catch { return '' }
 }
 
