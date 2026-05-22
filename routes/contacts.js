@@ -55,6 +55,18 @@ router.post('/', async (req, res) => {
   sendAdminEmail(lead).catch(e => console.error('[email notification]', e.message))
 })
 
+// POST /api/contacts/test-email — admin only: send a test email and return result
+router.post('/test-email', requireAdmin, async (req, res) => {
+  const lead = { name: 'בדיקה', phone: '0559811814', email: 'test@example.com', msg: 'הודעת בדיקה — מערכת אפיק הנחל', propTitle: 'נכס בדיקה', propLocation: 'כפר סבא', source: 'admin-test' }
+  try {
+    await sendAdminEmail(lead)
+    return res.json({ ok: true })
+  } catch (e) {
+    console.error('[test-email]', e.message)
+    return res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
 // POST /api/contacts/test-wa — admin only: immediately send a WA test and return result
 router.post('/test-wa', requireAdmin, async (req, res) => {
   const phone = req.body?.phone || '0559811814'
