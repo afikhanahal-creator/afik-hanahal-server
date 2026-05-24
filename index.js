@@ -139,4 +139,23 @@ app.use((err, req, res, next) => {
 })
 
 const PORT = process.env.PORT || 3001
-app.listen(PORT, () => console.log(`[server] listening on port ${PORT}`))
+app.listen(PORT, () => {
+  console.log(`[server] listening on port ${PORT}`)
+  // Warm news cache on startup then refresh every morning at 08:00 Israel time
+  warmNewsCache()
+  setInterval(warmNewsCache, 60 * 60 * 1000)   // check hourly
+})
+
+async function warmNewsCache() {
+  try {
+    const hourIL = Number(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem', hour: 'numeric', hour12: false }))
+    // On startup (hour=any) we always warm; on scheduled checks only at 08:00
+    const LAST_KEY = '_newsCacheWarmedDate'
+    const todayIL  = new Date().toLocaleDateString('en-US', { timeZone: 'Asia/Jerusalem' })
+    if (global[LAST_KEY] === todayIL && hourIL !== 8) return
+    global[LAST_KEY] = todayIL
+    console.log('[news-cron] warming news cache…')
+    const r = await fetch(`http://localhost:${PORT}/api/news/feed`, { signal: AbortSignal.timeout(60000) })
+    console.log(`[news-cron] done — ${r.status}`)
+  } catch (e) { console.warn('[news-cron] warm failed:', e.message) }
+}
