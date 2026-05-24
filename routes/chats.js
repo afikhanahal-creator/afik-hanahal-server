@@ -14,7 +14,54 @@ function requireAdmin(req, res, next) {
   next()
 }
 
-// GET /api/chats/:phone — full chat history for a lead (admin only)
+// GET /api/chats/status — Green API instance connection state
+router.get('/status', requireAdmin, async (req, res) => {
+  if (!GREEN_INSTANCE || !GREEN_TOKEN) {
+    return res.json({ state: 'notConfigured' })
+  }
+  try {
+    const url = `${GREEN_BASE_URL}/waInstance${GREEN_INSTANCE}/getStateInstance/${GREEN_TOKEN}`
+    const resp = await fetch(url, { signal: AbortSignal.timeout(8000) })
+    if (!resp.ok) return res.json({ state: 'error', httpStatus: resp.status })
+    const data = await resp.json()
+    return res.json({ state: data.stateInstance || 'unknown' })
+  } catch (e) {
+    console.warn('[chats/status]', e.message)
+    return res.json({ state: 'error', error: e.message })
+  }
+})
+
+// GET /api/chats/conversations — all unique chat participants sorted by last message
+router.get('/conversations', requireAdmin, async (req, res) => {
+  try {
+    if (!supabase) return res.json([])
+    const { data, error } = await supabase
+      .from('chats')
+      .select('phone, direction, message, created_at')
+      .order('created_at', { ascending: false })
+      .limit(1000)
+    if (error) throw error
+
+    // Collapse to one row per phone (first row = most recent)
+    const map = new Map()
+    for (const row of (data || [])) {
+      if (!map.has(row.phone)) {
+        map.set(row.phone, {
+          phone:         row.phone,
+          lastMessage:   row.message,
+          lastDirection: row.direction,
+          lastAt:        row.created_at,
+        })
+      }
+    }
+    return res.json([...map.values()])
+  } catch (e) {
+    console.warn('[chats/conversations]', e.message)
+    return res.json([])
+  }
+})
+
+// GET /api/chats/:phone — full chat history for a phone (admin only)
 router.get('/:phone', requireAdmin, async (req, res) => {
   const phone = toIntlPhone(req.params.phone) || req.params.phone
   try {
@@ -33,7 +80,7 @@ router.get('/:phone', requireAdmin, async (req, res) => {
   }
 })
 
-// POST /api/chats/send — admin sends a WhatsApp message to a lead via Green API
+// POST /api/chats/send — admin sends a WhatsApp message via Green API
 router.post('/send', requireAdmin, async (req, res) => {
   const { phone, message } = req.body
   if (!phone || !message?.trim()) return res.status(400).json({ error: 'phone and message required' })
@@ -64,6 +111,38 @@ router.post('/send', requireAdmin, async (req, res) => {
   }
 })
 
+// POST /api/chats/webhook — Green API webhook receiver (incoming messages)
+// Configure this URL in your Green API console → Webhook URL
+router.post('/webhook', async (req, res) => {
+  // Respond 200 immediately so Green API doesn't retry
+  res.status(200).json({ ok: true })
+
+  const body = req.body
+  if (!body?.typeWebhook) return
+
+  try {
+    if (body.typeWebhook === 'incomingMessageReceived') {
+      const chatId = body.senderData?.chatId || ''
+      if (chatId.includes('@g.us')) return // skip group chats for now
+      const phone = chatId.replace('@c.us', '')
+      const text = body.messageData?.textMessageData?.textMessage
+                || body.messageData?.extendedTextMessageData?.text
+                || ''
+      if (phone && text) {
+        await saveChatMessage(phone, 'in', text)
+        console.log(`[webhook] ← ${phone}: ${text.slice(0, 80)}`)
+      }
+    } else if (body.typeWebhook === 'outgoingMessageStatus') {
+      // Future: update message status (sent/delivered/read) in DB
+      console.log('[webhook] outgoing status:', body.status, body.chatId)
+    } else if (body.typeWebhook === 'stateInstanceChanged') {
+      console.log('[webhook] instance state:', body.stateInstance)
+    }
+  } catch (e) {
+    console.error('[webhook]', e.message)
+  }
+})
+
 // PATCH /api/chats/status — update lead_status in contacts table
 router.patch('/status', requireAdmin, async (req, res) => {
   const { phone, status } = req.body
@@ -72,12 +151,11 @@ router.patch('/status', requireAdmin, async (req, res) => {
     if (!supabase) return res.json({ ok: true })
     const to = toIntlPhone(phone) || phone
     const altPhone = to.startsWith('972') ? '0' + to.slice(3) : null
-    let q = supabase.from('contacts').update({ lead_status: status }).eq('phone', to)
-    await q
+    await supabase.from('contacts').update({ lead_status: status }).eq('phone', to)
     if (altPhone) await supabase.from('contacts').update({ lead_status: status }).eq('phone', altPhone)
     return res.json({ ok: true })
   } catch (e) {
-    console.warn('[chats/status]', e.message)
+    console.warn('[chats/status PATCH]', e.message)
     return res.status(500).json({ error: e.message })
   }
 })
