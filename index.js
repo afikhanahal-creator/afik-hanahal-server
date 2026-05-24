@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
-import propertiesRouter from './routes/properties.js'
+import propertiesRouter, { preloadFromSupabase } from './routes/properties.js'
 import contactsRouter  from './routes/contacts.js'
 import newsRouter      from './routes/news.js'
 import statsRouter     from './routes/stats.js'
@@ -92,7 +92,7 @@ async function runMigrations() {
     console.warn('[migrations] Supabase check failed:', e.message)
   }
 }
-runMigrations()
+runMigrations().then(() => preloadFromSupabase())
 
 const app = express()
 
