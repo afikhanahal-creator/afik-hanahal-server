@@ -46,6 +46,10 @@ router.get('/', async (req, res) => {
 router.post('/bulk', requireAdmin, async (req, res) => {
   const props = req.body
   if (!Array.isArray(props)) return res.status(400).json({ error: 'Expected an array' })
+  // Safety guard: refuse an empty wipe unless the caller explicitly confirms it
+  if (props.length === 0 && req.headers['x-confirm-wipe'] !== '1') {
+    return res.status(400).json({ error: 'Refusing empty array — would delete all properties. Send x-confirm-wipe: 1 header to override.' })
+  }
 
   if (supabase) {
     try {
