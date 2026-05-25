@@ -34,7 +34,8 @@ const RSS_SOURCES = [
 ]
 
 const HE_RE = /[א-ת]/
-const RE_FILTER = /נדל|דיר[הות]|דיור|שכיר[ות]|שוכר|משכיר|קרק[ע]|מגרש|משכנת|פינוי.?בינוי|התחדשות.?עירונית|מקרקעין|טאבו|קבלן|יזם|בנייה|בניין|תמ.?א|מגורים|שרון|כפר.?סבא|רעננה|נתניה|הוד.השרון|ראשון.?לציון|פתח.?תקווה|רמת.?גן|בני.?ברק|שוק.?הנד|מחיר.*דיר|רכישת.?דיר|דירה.*למכיר|למכיר.*דיר|אחוזי.?מימון|ריבית.*משכנת|כינוס.?נכסים|תל.?אביב.*נדל|ירושלים.*נדל/i
+// Every article, regardless of source, must match one of these real-estate terms
+const RE_FILTER = /נדל|דיר[הות]|דיור|שכיר[ות]|שוכר|משכיר|קרק[ע]|מגרש|משכנת|פינוי.?בינוי|התחדשות.?עירונית|מקרקעין|טאבו|קבלן|יזם|בנייה|בניין|תמ.?א|מגורים|שרון|כפר.?סבא|רעננה|נתניה|הוד.?השרון|ראשון.?לציון|פתח.?תקווה|רמת.?גן|בני.?ברק|שוק.?הנד|מחיר.*דיר|רכישת.?דיר|דירה.*למכיר|למכיר.*דיר|אחוזי.?מימון|ריבית.*משכנת|כינוס.?נכסים|תל.?אביב.*נדל|ירושלים.*נדל|הלוואת.?נדל|שכר.?דירה|שוכרים|משכיר|מתחם|יח.?ד|בנייה.?רוויה|בניה.?רוויה|פרויקט|ביצוע.?בינוי|רוכשי.?דיר|שוק.?הדיור|מחיר.?לדיירים|זכות.?בדירה|דמי.?שכירות/i
 
 function isRealEstate(title) { return RE_FILTER.test(title) }
 function isHebrew(text)       { return HE_RE.test(text) }
@@ -42,10 +43,15 @@ function isHebrew(text)       { return HE_RE.test(text) }
 function isArticleImage(url) {
   if (!url || typeof url !== 'string') return false
   const u = url.toLowerCase()
-  return u.startsWith('http') &&
-    !u.includes('logo') && !u.includes('default') && !u.includes('placeholder') &&
-    !u.includes('favicon') && !u.includes('generic') && !u.includes('blank') &&
-    !u.includes('avatar') && !u.includes('icon') && u.length > 20
+  if (!u.startsWith('http')) return false
+  if (u.length < 24) return false
+  // reject obvious non-article images
+  if (u.includes('logo') || u.includes('favicon') || u.includes('icon') ||
+      u.includes('default') || u.includes('placeholder') || u.includes('blank') ||
+      u.includes('avatar') || u.includes('generic') || u.includes('pixel') ||
+      u.includes('spacer') || u.includes('tracking') || u.includes('1x1') ||
+      u.endsWith('.svg') || u.endsWith('.gif')) return false
+  return true
 }
 
 // ── RSS parser (no external libs) ─────────────────────────────────────────────
@@ -70,16 +76,25 @@ function parseRSS(xml, sourceName, trusted = false, isGN = false) {
     const date    = pubDate ? new Date(pubDate) : new Date()
 
     // Image extraction — multiple strategies in priority order
-    const imgMedia    = g(/<media:content[^>]+url=["']([^"']+)["']/)
-                     || g(/<media:thumbnail[^>]+url=["']([^"']+)["']/)
-    const imgEnc      = g(/<enclosure[^>]+type=["']image[^"']*["'][^>]+url=["']([^"']+)["']/)
-                     || g(/<enclosure[^>]+url=["']([^"']+)["'][^>]+type=["']image[^"']*["']/)
+    // media:content / media:thumbnail — extract url= attr regardless of position
+    const extractTagUrl = tag => {
+      const t = c.match(new RegExp(`<${tag}[^>]*>`))?.[0] || ''
+      return (t.match(/url=["']([^"']+)["']/) || [])[1] || ''
+    }
+    const imgMedia = extractTagUrl('media:content')
+                  || extractTagUrl('media:thumbnail')
 
+    // enclosure — both attribute orderings
+    const imgEnc = g(/<enclosure[^>]+type=["']image[^"']*["'][^>]+url=["']([^"']+)["']/)
+                || g(/<enclosure[^>]+url=["']([^"']+)["'][^>]+type=["']image[^"']*["']/)
+
+    // description / content:encoded — decoded HTML
     const rawDesc = (c.match(/<description[^>]*>([\s\S]*?)<\/description>/) || [])[1] || ''
     const descDec = rawDesc
       .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
       .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&amp;/g,'&')
-    const imgDesc = (descDec.match(/<img[^>]+src=["']([^"']+)["']/) || [])[1] || ''
+    const imgDesc = (descDec.match(/<img[^>]+src=["']([^"']+)["']/) || [])[1]
+                 || (descDec.match(/<img[^>]+src=([^\s>]+)/) || [])[1] || ''
 
     const rawCE = (c.match(/<content:encoded[^>]*>([\s\S]*?)<\/content:encoded>/) || [])[1] || ''
     const ceDec = rawCE
@@ -87,8 +102,11 @@ function parseRSS(xml, sourceName, trusted = false, isGN = false) {
       .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&amp;/g,'&')
     const imgCE = (ceDec.match(/<img[^>]+src=["']([^"']+)["']/) || [])[1] || ''
 
-    // Google News cards are branded thumbnails — not useful
-    const rawImg = isGN ? '' : (imgMedia || imgEnc || imgDesc || imgCE || '')
+    // <image><url>…</url></image> inside the item (some feeds)
+    const imgItemTag = g(/<image[^>]*>[\s\S]*?<url[^>]*>(https?:\/\/[^<]+)<\/url>/)
+
+    // Google News branded thumbs are useless — skip them
+    const rawImg = isGN ? '' : (imgMedia || imgEnc || imgDesc || imgCE || imgItemTag || '')
     const image  = isArticleImage(rawImg) ? rawImg : ''
 
     // For Google News: extract real article URL + real source name
@@ -113,40 +131,70 @@ function parseRSS(xml, sourceName, trusted = false, isGN = false) {
 }
 
 // ── Fetch og:image — server-side (no CORS) ────────────────────────────────────
-// Tries multiple User-Agents so paywalled/bot-blocking sites are more likely to return an image
+// Tries multiple User-Agents in parallel for speed; extracts all common image meta tags
 async function fetchOGImage(url) {
+  if (!url || !url.startsWith('http')) return ''
+
   const UAs = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+    'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
   ]
-  for (const ua of UAs) {
+
+  let domain = ''
+  try { domain = new URL(url).hostname } catch { return '' }
+
+  // Try all UAs in parallel — take the first successful image
+  const attempts = UAs.map(async ua => {
     try {
-      let domain = ''
-      try { domain = new URL(url).hostname } catch {}
       const r = await fetch(url, {
         headers: {
           'User-Agent': ua,
           'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
-          'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8',
-          'Referer': domain ? `https://${domain}/` : 'https://www.google.com/',
+          'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Cache-Control': 'no-cache',
+          'Referer': 'https://www.google.com/',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
         },
-        signal: AbortSignal.timeout(7000),
+        signal: AbortSignal.timeout(9000),
         redirect: 'follow',
       })
-      if (!r.ok) continue
-      try { if (new URL(r.url).hostname.includes('google.com')) return '' } catch {}
+      if (!r.ok) return ''
+      // If redirect landed on Google/paywall, bail
+      try {
+        const finalHost = new URL(r.url).hostname
+        if (finalHost === 'news.google.com' || finalHost === 'accounts.google.com') return ''
+      } catch {}
       const html = await r.text()
+      // All common og/twitter/schema image meta patterns
       const img = (
-        html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
-        html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
-        html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i) ||
-        html.match(/<meta[^>]+property=["']og:image:secure_url["'][^>]+content=["']([^"']+)["']/i)
-      )?.[1]?.replace(/&amp;/g,'&').replace(/&quot;/g,'"') || ''
-      if (isArticleImage(img)) return img
-    } catch {}
-  }
-  return ''
+        html.match(/<meta[^>]+property=["']og:image(?::url)?["'][^>]+content=["']([^"']+)["']/i) ||
+        html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image(?::url)?["']/i) ||
+        html.match(/<meta[^>]+property=["']og:image:secure_url["'][^>]+content=["']([^"']+)["']/i) ||
+        html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image:secure_url["']/i) ||
+        html.match(/<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["']/i) ||
+        html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["']/i) ||
+        // JSON-LD schema.org image
+        html.match(/"image"\s*:\s*\{\s*"@type"\s*:\s*"ImageObject"\s*,\s*"url"\s*:\s*"([^"]+)"/i) ||
+        html.match(/"image"\s*:\s*"(https?:\/\/[^"]{20,})"/i)
+      )?.[1]?.replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/\\u002F/g,'/').trim() || ''
+      return isArticleImage(img) ? img : ''
+    } catch { return '' }
+  })
+
+  // Return first non-empty result
+  return new Promise(resolve => {
+    let done = false
+    let pending = UAs.length
+    attempts.forEach(p => p.then(img => {
+      pending--
+      if (!done && img) { done = true; resolve(img) }
+      else if (pending === 0 && !done) resolve('')
+    }))
+  })
 }
 
 // ── De-duplicate images that appear on multiple articles (= source logo) ──────
@@ -201,7 +249,7 @@ export async function buildNewsFeed() {
       try {
         const r = await fetch(url, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
             'Accept': 'application/xml,text/xml,application/rss+xml,*/*;q=0.8',
             'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8',
           },
@@ -209,75 +257,71 @@ export async function buildNewsFeed() {
         })
         if (!r.ok) { console.warn(`[news] ${name}: HTTP ${r.status}`); return [] }
         const parsed = parseRSS(await r.text(), name, trusted, gn)
-        console.log(`[news] ${name}: ${parsed.length} items`)
+        console.log(`[news] ${name}: ${parsed.length} items (${parsed.filter(a=>a.image).length} with image)`)
         return parsed
       } catch (e) { console.warn(`[news] ${name}: ${e.message}`); return [] }
     })
   )
 
-  // Merge: direct-source first (they win dedup over GN duplicates)
-  const all = results.flatMap(r => r.status === 'fulfilled' ? r.value : [])
+  // Merge: direct-source first so their images win dedup
+  const all    = results.flatMap(r => r.status === 'fulfilled' ? r.value : [])
   const byDate = a => new Date(a.publishedAt).getTime()
   const direct = all.filter(a => !a.isGN).sort((a,b) => byDate(b) - byDate(a))
   const gn     = all.filter(a =>  a.isGN).sort((a,b) => byDate(b) - byDate(a))
 
-  // Deduplicate by title prefix (40 chars)
+  // Deduplicate by 40-char title key; ALL articles must be Hebrew real-estate
   const seen   = new Set()
   const merged = [...direct, ...gn].filter(a => {
     if (!a.title || !isHebrew(a.title)) return false
-    if (!a.trusted && !isRealEstate(a.title)) return false
+    if (!isRealEstate(a.title)) return false   // strict — no exceptions
     const k = a.title.replace(/\s+/g,'').slice(0, 40)
     if (seen.has(k)) return false
     seen.add(k); return true
   })
 
-  // Sort by date, cap at 120 before limiting per source
-  const sorted = merged.sort((a,b) => new Date(b.publishedAt) - new Date(a.publishedAt)).slice(0, 120)
+  // Sort newest-first, cap pool at 200 before OG enrichment
+  const pool = merged.sort((a,b) => byDate(b) - byDate(a)).slice(0, 200)
 
-  // Balance: max MAX_PER_SOURCE articles per outlet
-  let balanced = balanceSources(sorted)
-
-  // Shuffle: interleave sources so the feed looks diverse
-  balanced = shuffleSources(balanced)
-
-  // Remove duplicate images (source logos shared across articles)
-  balanced = deduplicateImages(balanced)
-
-  // Enrich with og:image where missing — parallel, direct-source articles first
-  const withoutImg = balanced.filter(a => !a.image)
-  const needImg = [
-    ...withoutImg.filter(a => !a.isGN),
-    ...withoutImg.filter(a =>  a.isGN),
-  ].slice(0, 50)  // up to 50 OG fetches
-
-  console.log(`[news] Fetching og:image for ${needImg.length} articles…`)
+  // ── OG image enrichment — NO CAP — fetch for every article missing an image ──
+  const needImg = pool.filter(a => !a.image)
+  console.log(`[news] OG fetching for ${needImg.length}/${pool.length} articles…`)
   const ogResults = await Promise.allSettled(needImg.map(a => fetchOGImage(a.url)))
   const ogMap = new Map(needImg.map((a, i) => [a.id, ogResults[i]]))
-  balanced = balanced.map(a => {
+  const enriched = pool.map(a => {
     if (!a.image && ogMap.has(a.id)) {
       const r   = ogMap.get(a.id)
-      const img = (r?.status === 'fulfilled' && r.value) ? r.value : ''
-      return { ...a, image: img }
+      const img = r?.status === 'fulfilled' ? r.value : ''
+      return { ...a, image: img || '' }
     }
     return a
   })
 
-  // Final: articles with image first, then without
-  const withImg     = balanced.filter(a => a.image)
-  const withoutImg2 = balanced.filter(a => !a.image)
-  const final       = [...withImg, ...withoutImg2].slice(0, 80)
+  // ── STRICT: drop every article that has no image ───────────────────────────
+  const withImages = enriched.filter(a => a.image)
+  console.log(`[news] ${withImages.length} articles have images (dropped ${pool.length - withImages.length} imageless)`)
 
-  const imgCount = final.filter(a => a.image).length
-  const sources  = [...new Set(final.map(a => a.source))]
-  console.log(`[news] Feed ready: ${final.length} articles, ${imgCount} with images, ${sources.length} sources`)
+  // Balance (source cap applied AFTER image filter — no slot wasted on imageless)
+  let balanced = balanceSources(withImages)
 
-  // Upsert to Supabase — keep for archive
-  if (supabase) {
+  // Shuffle sources for visual diversity
+  balanced = shuffleSources(balanced)
+
+  // Remove duplicate images (same URL on multiple articles = source logo)
+  balanced = deduplicateImages(balanced)
+
+  // Final: only articles with images, max 40
+  const final = balanced.filter(a => a.image).slice(0, 40)
+
+  const sources = [...new Set(final.map(a => a.source))]
+  console.log(`[news] ✓ Feed ready: ${final.length} articles WITH images, ${sources.length} sources: ${sources.join(', ')}`)
+
+  // ── Save to Supabase (only articles with images) ─────────────────────────────
+  if (supabase && final.length) {
     const rows = final.map(a => ({
       id:          a.id,
       title:       a.title,
       url:         a.url,
-      image:       a.image || null,
+      image:       a.image,
       source:      a.source,
       published_at: a.publishedAt,
       lang:        'he',
@@ -287,15 +331,15 @@ export async function buildNewsFeed() {
       .upsert(rows, { onConflict: 'id' })
       .then(({ error }) => { if (error) console.warn('[news] supabase upsert:', error.message) })
 
-    // Mark articles older than 3 weeks as archived
-    const cutoff = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000).toISOString()
+    // Mark articles older than 30 days as archived
+    const archiveCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
     supabase.from('news_articles')
       .update({ archived: true })
-      .eq('lang', 'he').lt('published_at', cutoff).eq('archived', false)
-      .then(({ error }) => { if (error) console.warn('[news] archive old:', error.message) })
+      .eq('lang', 'he').lt('published_at', archiveCutoff).eq('archived', false)
+      .then(({ error }) => { if (error) console.warn('[news] archive-mark:', error.message) })
 
-    // Delete articles older than 30 days to keep table clean
-    const deleteCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    // Delete articles older than 35 days to keep table lean
+    const deleteCutoff = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString()
     supabase.from('news_articles')
       .delete()
       .lt('published_at', deleteCutoff)
@@ -337,24 +381,26 @@ router.get('/feed', async (req, res) => {
   res.json(articles)
 })
 
-// ── GET /api/news/archive — last 3 weeks from Supabase ────────────────────────
+// ── GET /api/news/archive — last 30 days from Supabase, images only ───────────
 router.get('/archive', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
   if (!supabase) return res.json([])
 
-  const cutoff = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000).toISOString()
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   const { data, error } = await supabase.from('news_articles')
     .select('id, title, url, image, source, published_at')
     .eq('lang', 'he')
     .gte('published_at', cutoff)
+    .not('image', 'is', null)   // only articles with images
+    .neq('image', '')           // exclude empty string images
     .order('published_at', { ascending: false })
     .limit(500)
 
   if (error) return res.status(500).json({ error: error.message })
-  res.json(data || [])
+  res.json((data || []).filter(a => a.image))   // double-check client-side too
 })
 
-// ── GET /api/news — current live articles (Supabase non-archived) ──────────────
+// ── GET /api/news — current live articles, images only ─────────────────────────
 router.get('/', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
 
@@ -364,9 +410,10 @@ router.get('/', async (req, res) => {
   if (!supabase) return res.json([])
   const { data, error } = await supabase.from('news_articles')
     .select('*').eq('lang','he').eq('archived', false)
-    .order('published_at', { ascending: false }).limit(80)
+    .not('image', 'is', null).neq('image', '')
+    .order('published_at', { ascending: false }).limit(40)
   if (error) return res.status(500).json({ error: error.message })
-  res.json(data || [])
+  res.json((data || []).filter(a => a.image))
 })
 
 // ── POST /api/news/sync — frontend push to Supabase ───────────────────────────
