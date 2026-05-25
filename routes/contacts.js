@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { supabase } from '../lib/supabase.js'
-import { sendWAFollowUp, sendAdminEmail } from '../lib/notifications.js'
+import { sendWAFollowUp, sendAdminEmail, sendAdminWhatsApp } from '../lib/notifications.js'
 
 const router = Router()
 let memContacts = []   // in-memory fallback when Supabase is unreachable
@@ -51,8 +51,9 @@ router.post('/', async (req, res) => {
     delayMin * 60 * 1000
   )
 
-  // 3. Immediate admin email notification
+  // 3. Immediate admin email + WhatsApp notification to Afik
   sendAdminEmail(lead).catch(e => console.error('[email notification]', e.message))
+  sendAdminWhatsApp(lead).catch(e => console.error('[WA admin notification]', e.message))
 })
 
 // POST /api/contacts/test-email — admin only: send a test email and return result
