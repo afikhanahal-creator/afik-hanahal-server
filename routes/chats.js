@@ -6,7 +6,11 @@ const router = Router()
 
 const GREEN_INSTANCE = process.env.WA_GREENAPI_INSTANCE
 const GREEN_TOKEN    = process.env.WA_GREENAPI_TOKEN
-const GREEN_BASE_URL = (process.env.WA_GREENAPI_URL || 'https://api.green-api.com').replace(/\/$/, '')
+// Derive regional URL from instance ID (e.g. 7107558519 → https://7107.api.greenapi.com)
+const GREEN_BASE_URL = (process.env.WA_GREENAPI_URL || (() => {
+  const region = String(GREEN_INSTANCE || '').slice(0, 4)
+  return region ? `https://${region}.api.greenapi.com` : 'https://api.green-api.com'
+})()).replace(/\/$/, '')
 
 function requireAdmin(req, res, next) {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim()
