@@ -105,8 +105,8 @@ function parseRSS(xml, sourceName, trusted = false, isGN = false) {
     // <image><url>…</url></image> inside the item (some feeds)
     const imgItemTag = g(/<image[^>]*>[\s\S]*?<url[^>]*>(https?:\/\/[^<]+)<\/url>/)
 
-    // Google News branded thumbs are useless — skip them
-    const rawImg = isGN ? '' : (imgMedia || imgEnc || imgDesc || imgCE || imgItemTag || '')
+    // Google News descriptions include real article thumbnails (lh3.googleusercontent.com) — use them
+    const rawImg = imgMedia || imgEnc || imgDesc || imgCE || imgItemTag || ''
     const image  = isArticleImage(rawImg) ? rawImg : ''
 
     // For Google News: extract real article URL + real source name
@@ -435,6 +435,17 @@ router.post('/sync', async (req, res) => {
   const { error } = await supabase.from('news_articles').upsert(rows, { onConflict: 'id' })
   if (error) return res.status(500).json({ error: error.message })
   res.json({ ok: true, count: rows.length })
+})
+
+// ── POST /api/news/rebuild — admin-only: force a fresh rebuild ────────────────
+router.post('/rebuild', async (req, res) => {
+  const token = (req.headers.authorization || '').replace('Bearer ', '').trim()
+  if (token !== process.env.ADMIN_TOKEN) return res.status(401).json({ error: 'Unauthorized' })
+  CACHE.articles = null; CACHE.ts = 0
+  res.json({ ok: true, message: 'Rebuild started' })
+  buildNewsFeed()
+    .then(articles => { CACHE.articles = articles; CACHE.ts = Date.now(); console.log('[news/rebuild] done:', articles.length, 'articles') })
+    .catch(e => console.error('[news/rebuild] failed:', e.message))
 })
 
 export default router
