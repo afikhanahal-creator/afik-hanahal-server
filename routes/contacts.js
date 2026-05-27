@@ -98,4 +98,26 @@ router.get('/', requireAdmin, async (req, res) => {
   }
 })
 
+// DELETE /api/contacts/:id — admin only, delete single lead
+router.delete('/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params
+  memContacts = memContacts.filter(c => String(c.id) !== String(id))
+  if (!supabase) return res.json({ ok: true })
+  const { error } = await supabase.from('contacts').delete().eq('id', id)
+  if (error) { console.error('[contacts DELETE]', error.message); return res.status(500).json({ error: error.message }) }
+  console.log('[contacts] deleted id:', id)
+  res.json({ ok: true })
+})
+
+// DELETE /api/contacts — admin only, delete ALL leads
+router.delete('/', requireAdmin, async (req, res) => {
+  memContacts = []
+  if (!supabase) return res.json({ ok: true })
+  // Delete all rows — using gt 0 covers all bigserial IDs
+  const { error } = await supabase.from('contacts').delete().gt('id', 0)
+  if (error) { console.error('[contacts DELETE all]', error.message); return res.status(500).json({ error: error.message }) }
+  console.log('[contacts] all leads deleted')
+  res.json({ ok: true })
+})
+
 export default router
