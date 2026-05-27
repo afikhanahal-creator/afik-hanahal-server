@@ -18,7 +18,7 @@ const DEFAULT_SHARON = [
 ]
 
 // In-memory cache — survives Supabase hiccups within the same process lifetime
-let MEM = { stats: DEFAULT_STATS, sharon: DEFAULT_SHARON, updatedAt: null }
+let MEM = { stats: DEFAULT_STATS, sharon: DEFAULT_SHARON, govmapToken: '', updatedAt: null }
 
 function isAdmin(req) {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim()
@@ -39,15 +39,19 @@ router.get('/', async (req, res) => {
     const { data, error } = await supabase
       .from('site_config')
       .select('key, value, updated_at')
-      .in('key', ['stats', 'sharon'])
+      .in('key', ['stats', 'sharon', 'govmap_token'])
 
     if (!error && data?.length) {
-      const result = { stats: DEFAULT_STATS, sharon: DEFAULT_SHARON, updatedAt: null }
+      const result = { stats: DEFAULT_STATS, sharon: DEFAULT_SHARON, govmapToken: '', updatedAt: null }
       data.forEach(row => {
-        if (row.key === 'stats'  && Array.isArray(row.value)) result.stats  = row.value
-        if (row.key === 'sharon' && Array.isArray(row.value)) result.sharon = row.value
-        if (!result.updatedAt || row.updated_at > result.updatedAt) result.updatedAt = row.updated_at
+        if (row.key === 'stats'         && Array.isArray(row.value))  result.stats       = row.value
+        if (row.key === 'sharon'        && Array.isArray(row.value))  result.sharon      = row.value
+        if (row.key === 'govmap_token'  && typeof row.value === 'string') result.govmapToken = row.value
+        if (row.key === 'govmap_token'  && row.value?.token)          result.govmapToken = row.value.token
+        if (!result.updatedAt || row.updated_at > result.updatedAt)  result.updatedAt   = row.updated_at
       })
+      // Update in-memory cache
+      MEM = { ...MEM, ...result }
       return res.json(result)
     }
     if (error) console.warn('[stats] supabase read error:', error.message)
@@ -59,20 +63,23 @@ router.get('/', async (req, res) => {
 
 // POST /api/stats — admin-only save
 router.post('/', requireAdmin, async (req, res) => {
-  const { stats, sharon } = req.body
-  if (!stats && !sharon) return res.status(400).json({ error: 'stats or sharon required' })
+  const { stats, sharon, govmapToken } = req.body
+  if (!stats && !sharon && govmapToken === undefined)
+    return res.status(400).json({ error: 'stats, sharon, or govmapToken required' })
 
   const now = new Date().toISOString()
 
   // Always update in-memory immediately
-  if (stats)  MEM.stats  = stats
-  if (sharon) MEM.sharon = sharon
+  if (stats)                   MEM.stats       = stats
+  if (sharon)                  MEM.sharon      = sharon
+  if (govmapToken !== undefined) MEM.govmapToken = govmapToken
   MEM.updatedAt = now
 
   if (supabase) {
     const rows = []
-    if (stats)  rows.push({ key: 'stats',  value: stats  })
-    if (sharon) rows.push({ key: 'sharon', value: sharon })
+    if (stats)                     rows.push({ key: 'stats',        value: stats        })
+    if (sharon)                    rows.push({ key: 'sharon',       value: sharon       })
+    if (govmapToken !== undefined) rows.push({ key: 'govmap_token', value: govmapToken })
 
     const { error } = await supabase
       .from('site_config')
@@ -82,7 +89,7 @@ router.post('/', requireAdmin, async (req, res) => {
       console.error('[stats] supabase upsert error:', error.message)
       return res.status(500).json({ error: error.message })
     }
-    console.log(`[stats] saved — stats:${!!stats} sharon:${!!sharon}`)
+    console.log(`[stats] saved — stats:${!!stats} sharon:${!!sharon} govmapToken:${govmapToken !== undefined}`)
   }
 
   res.json({ ok: true, ts: now })
