@@ -9,6 +9,7 @@ import whatsappRouter  from './routes/whatsapp.js'
 import capiRouter      from './routes/capi.js'
 import aiRouter        from './routes/ai.js'
 import uploadRouter    from './routes/upload.js'
+import settingsRouter  from './routes/settings.js'
 import chatsRouter     from './routes/chats.js'
 import { supabase }    from './lib/supabase.js'
 
@@ -126,6 +127,7 @@ app.use('/api/capi',       capiRouter)
 app.use('/api/ai',         aiRouter)
 app.use('/api/upload',    uploadRouter)
 app.use('/api/chats',     chatsRouter)
+app.use('/api/settings',  settingsRouter)
 
 // Handle multer errors (e.g., file too large, wrong type)
 app.use((err, req, res, next) => {
