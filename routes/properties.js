@@ -99,13 +99,23 @@ router.get('/', async (req, res) => {
 })
 
 // ── GET /api/properties/status — Supabase health (admin) ──────────────────────
-router.get('/status', requireAdmin, (req, res) => {
+router.get('/status', requireAdmin, async (req, res) => {
+  let liveError = null
+  if (supabase && !supabaseOk) {
+    // Do a live ping to get the real error from Supabase
+    try {
+      const { error } = await supabase.from('properties').select('id', { count: 'exact', head: true })
+      if (!error) supabaseOk = true
+      else liveError = error.message
+    } catch (e) { liveError = e.message }
+  }
   res.json({
     supabaseConfigured: !!supabase,
     supabaseReachable:  supabaseOk,
+    supabaseError:      liveError,
     cachedCount:        memStore.length,
     warning: (!supabase || !supabaseOk)
-      ? 'Supabase unavailable — data in memory only, lost on restart!'
+      ? `Supabase unavailable — data in memory only, lost on restart! ${liveError ? `Error: ${liveError}` : ''}`
       : null,
   })
 })
