@@ -98,6 +98,21 @@ router.get('/', requireAdmin, async (req, res) => {
   }
 })
 
+// PATCH /api/contacts/:id — admin only, update lead fields (status, notes, etc.)
+router.patch('/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params
+  const allowed = ['lead_status', 'name', 'phone', 'email', 'message', 'prop_title', 'prop_location']
+  const updates = {}
+  allowed.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f] })
+  if (!Object.keys(updates).length) return res.status(400).json({ error: 'no valid fields to update' })
+
+  memContacts = memContacts.map(c => String(c.id) === String(id) ? { ...c, ...updates } : c)
+  if (!supabase) return res.json({ ok: true })
+  const { error } = await supabase.from('contacts').update(updates).eq('id', id)
+  if (error) { console.error('[contacts PATCH]', error.message); return res.status(500).json({ error: error.message }) }
+  res.json({ ok: true })
+})
+
 // DELETE /api/contacts/:id — admin only, delete single lead
 router.delete('/:id', requireAdmin, async (req, res) => {
   const { id } = req.params
