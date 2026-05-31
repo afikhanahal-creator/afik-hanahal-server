@@ -28,6 +28,15 @@ const videoUpload = multer({
   },
 })
 
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB per image
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true)
+    else cb(new Error('Only image files are allowed'))
+  },
+})
+
 function isAdmin(req) {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim()
   return token === process.env.ADMIN_TOKEN
@@ -106,6 +115,65 @@ router.post('/video', videoUpload.single('file'), async (req, res) => {
     return res.json({ ok: true, url: urlData.publicUrl, name: req.file.originalname })
   } catch (e) {
     console.error('[upload video]', e.message)
+    return res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /api/upload/image — stores to Supabase Storage property-images, returns permanent public URL
+router.post('/image', imageUpload.single('file'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'Unauthorized' })
+  if (!req.file) return res.status(400).json({ error: 'No image file provided' })
+  if (!supabase) return res.status(503).json({ error: 'Storage not configured — Supabase not connected' })
+
+  try {
+    await ensureBucket('property-images', { fileSizeLimit: 15 * 1024 * 1024 })
+
+    const ext = (req.file.originalname.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z]/g, '')
+    const storagePath = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
+
+    const { error: uploadErr } = await supabase.storage
+      .from('property-images')
+      .upload(storagePath, req.file.buffer, {
+        contentType: req.file.mimetype || 'image/jpeg',
+        upsert: false,
+      })
+
+    if (uploadErr) throw uploadErr
+
+    const { data: urlData } = supabase.storage.from('property-images').getPublicUrl(storagePath)
+
+    console.log(`[upload image] stored ${storagePath} (${Math.round(req.file.size / 1024)}KB)`)
+    return res.json({ ok: true, url: urlData.publicUrl, name: req.file.originalname })
+  } catch (e) {
+    console.error('[upload image]', e.message)
+    return res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /api/upload/images — batch upload up to 20 images at once
+router.post('/images', imageUpload.array('files', 20), async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'Unauthorized' })
+  if (!req.files?.length) return res.status(400).json({ error: 'No images provided' })
+  if (!supabase) return res.status(503).json({ error: 'Storage not configured' })
+
+  try {
+    await ensureBucket('property-images', { fileSizeLimit: 15 * 1024 * 1024 })
+
+    const results = await Promise.all(req.files.map(async file => {
+      const ext = (file.originalname.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z]/g, '')
+      const storagePath = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
+      const { error } = await supabase.storage
+        .from('property-images')
+        .upload(storagePath, file.buffer, { contentType: file.mimetype || 'image/jpeg', upsert: false })
+      if (error) throw error
+      const { data } = supabase.storage.from('property-images').getPublicUrl(storagePath)
+      return { url: data.publicUrl, name: file.originalname }
+    }))
+
+    console.log(`[upload images] stored ${results.length} images`)
+    return res.json({ ok: true, images: results })
+  } catch (e) {
+    console.error('[upload images]', e.message)
     return res.status(500).json({ error: e.message })
   }
 })
