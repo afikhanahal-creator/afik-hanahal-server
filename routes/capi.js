@@ -3,8 +3,22 @@ import { createHash } from 'crypto'
 
 const router = Router()
 
-const CAPI_TOKEN = process.env.META_CAPI_TOKEN
-const PIXEL_ID   = process.env.META_PIXEL_ID
+// Two Meta pixels/datasets — every event is forwarded to BOTH so each stays active:
+//  1. הפיקסל של אפיק הנחל  (1311196023271539) — new dataset + its CAPI token
+//  2. legacy pixel        (1341264237748951) — kept active alongside the new one
+// Env vars override the PRIMARY (new) target's pixel/token.
+const CAPI_TARGETS = [
+  {
+    pixel: process.env.META_PIXEL_ID   || '1311196023271539',
+    token: process.env.META_CAPI_TOKEN ||
+      'EAAVd8MwSYuYBRuAUTYO2q8klvHkWZCnKCDiDUCbHFrys8UTqhUq8k1LQvaSJL8SSYhnAqoPFaPDe3T5o3lNFSzwyRsOnnSBVwGlxgdKD17hVa4LZBOWWB6MgtsMR7mKBfDH7SH3SrFUWRaNbm4qL0kW6GoyamFpLIWaxmudaNgvw5OHZAVFOXLCmzzprQZDZD',
+  },
+  {
+    pixel: '1341264237748951',
+    token: process.env.META_CAPI_TOKEN_LEGACY ||
+      'EAAOBFZAXNIScBRSg6zKgQmxOqYMWUNSu1YmLZC6hcd44hbs0FpZCr3qKlbHtx7UJEbCPXDhWBZCOLq9xITdQXJwGiBz2gnzZC4iA0F6uGHFLIPWUTo2iHLK11xSHBPsZCHuf3UpzcQfXrmjlo3JZBtkmcfGDKetE2J4CECQelzw3WJCTOUjZBhOgFSXlzPWEqAZDZD',
+  },
+]
 
 const sha256 = v =>
   v ? createHash('sha256').update(String(v).trim().toLowerCase()).digest('hex') : undefined
@@ -60,17 +74,21 @@ router.post('/', async (req, res) => {
   })
 
   try {
-    const resp = await fetch(
-      `https://graph.facebook.com/v25.0/${PIXEL_ID}/events?access_token=${CAPI_TOKEN}`,
-      {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ data }),
-      }
-    )
-    const result = await resp.json()
-    console.log('[CAPI] Response:', JSON.stringify(result))
-    return res.status(resp.ok ? 200 : 400).json(result)
+    const results = await Promise.all(CAPI_TARGETS.map(async t => {
+      const resp = await fetch(
+        `https://graph.facebook.com/v25.0/${t.pixel}/events?access_token=${t.token}`,
+        {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ data }),
+        }
+      )
+      const body = await resp.json().catch(() => ({}))
+      console.log(`[CAPI] ${t.pixel} →`, JSON.stringify(body))
+      return { pixel: t.pixel, ok: resp.ok, body }
+    }))
+    const ok = results.some(r => r.ok)
+    return res.status(ok ? 200 : 400).json({ results })
   } catch (err) {
     console.error('[CAPI] Fetch error:', err)
     return res.status(500).json({ error: err.message })
