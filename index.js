@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
+import compression from 'compression'
 import propertiesRouter, { preloadFromSupabase } from './routes/properties.js'
 import contactsRouter  from './routes/contacts.js'
 import newsRouter      from './routes/news.js'
@@ -113,6 +114,9 @@ app.use(cors({
   origin: (origin, cb) => isAllowed(origin) ? cb(null, true) : cb(new Error(`CORS: ${origin} not allowed`)),
   credentials: true,
 }))
+
+// gzip/brotli-compress all responses (JSON API payloads especially)
+app.use(compression())
 
 app.use(express.json({ limit: '25mb' }))
 

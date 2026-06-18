@@ -31,3 +31,7 @@ services:
         sync: false
       - key: META_PIXEL_ID
         sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_UPLOAD_PRESET
+        sync: false
