@@ -13,6 +13,7 @@ import uploadRouter    from './routes/upload.js'
 import settingsRouter  from './routes/settings.js'
 import chatsRouter     from './routes/chats.js'
 import { supabase }    from './lib/supabase.js'
+import { checkUsageAndAlert } from './lib/usage.js'
 
 // ── Run Supabase migrations on startup ─────────────────────────────────────
 async function runMigrations() {
@@ -152,6 +153,10 @@ app.listen(PORT, () => {
   // Warm news cache on startup then refresh every morning at 08:00 Israel time
   warmNewsCache()
   setInterval(warmNewsCache, 60 * 60 * 1000)   // check hourly
+  // Monitor Supabase Storage usage and alert before the free-tier quota fills.
+  // Delay the first check so auto-created buckets exist; then check daily.
+  setTimeout(checkUsageAndAlert, 30 * 1000)
+  setInterval(checkUsageAndAlert, 24 * 60 * 60 * 1000)
 })
 
 async function warmNewsCache() {

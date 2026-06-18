@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { supabase } from '../lib/supabase.js'
+import { getStorageUsage } from '../lib/usage.js'
 
 const router = Router()
 
@@ -29,6 +30,18 @@ function requireAdmin(req, res, next) {
   if (!isAdmin(req)) return res.status(401).json({ error: 'Unauthorized' })
   next()
 }
+
+// GET /api/stats/usage — admin-only Supabase Storage usage snapshot
+router.get('/usage', requireAdmin, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store')
+  if (!supabase) return res.status(503).json({ error: 'Storage not configured — Supabase not connected' })
+  try {
+    return res.json(await getStorageUsage())
+  } catch (e) {
+    console.error('[stats usage]', e.message)
+    return res.status(500).json({ error: e.message })
+  }
+})
 
 // GET /api/stats — public, no auth required
 router.get('/', async (req, res) => {

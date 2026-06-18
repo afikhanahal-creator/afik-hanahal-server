@@ -63,7 +63,29 @@ matching `If-None-Match`. Admin requests are always `no-store`.
 - Confirm objects carry `cache-control: max-age=31536000` (visible in the
   response headers of a public object URL).
 
+### 9. Storage usage monitor (free-tier guardrail)
+Keeps the site comfortably inside Supabase's **free tier** (~1 GB Storage). The
+server sums the size of every object across the `property-images` /
+`property-videos` / `property-pdfs` buckets on startup and once a day, logs the
+total, and sends the admin a **WhatsApp alert** (via the same Green API used for
+leads) once usage crosses `USAGE_ALERT_PCT` (default 80%) of
+`SUPABASE_STORAGE_LIMIT_MB` (default 1024). Alerts are debounced by
+`USAGE_ALERT_COOLDOWN_HOURS` (default 24) so they never spam.
+
+Query usage on demand (admin only):
+```
+GET /api/stats/usage          # Authorization: Bearer <ADMIN_TOKEN>
+→ { totalMB, totalObjects, limitMB, usedPct, alertPct, overThreshold, buckets:[…] }
+```
+
+**Can it stay on the free tier?** Yes — with videos on Cloudinary and images
+compressed + deduped, Storage (1 GB) and DB (500 MB) are not the tight limits;
+**egress (~5 GB/mo)** is. The 1-year cache headers (#2) and `ETag`/`304` (#7)
+keep egress low; if it ever climbs, put a free Cloudflare CDN in front of the
+site or move images to Cloudinary too.
+
 ## Environment variables
 See [`.env.example`](./.env.example). Storage-relevant additions:
 `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_UPLOAD_PRESET`, `VIDEO_MAX_MB`,
-`ALLOW_SUPABASE_VIDEO`.
+`ALLOW_SUPABASE_VIDEO`, `SUPABASE_STORAGE_LIMIT_MB`, `USAGE_ALERT_PCT`,
+`USAGE_ALERT_COOLDOWN_HOURS`.
