@@ -63,6 +63,17 @@ matching `If-None-Match`. Admin requests are always `no-store`.
 - Confirm objects carry `cache-control: max-age=31536000` (visible in the
   response headers of a public object URL).
 
+Run the verifier against your live project to check all of the above
+automatically (buckets public, cache-control on a fresh upload, compression,
+Cloudinary config):
+
+```bash
+SUPABASE_URL=... SUPABASE_SERVICE_KEY=... npm run verify:storage
+```
+
+It uploads one tiny temp object, checks its CDN cache header, then deletes it;
+exits non-zero if any hard check fails.
+
 ## Environment variables
 See [`.env.example`](./.env.example). Storage-relevant additions:
 `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_UPLOAD_PRESET`, `VIDEO_MAX_MB`,
