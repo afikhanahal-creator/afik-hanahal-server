@@ -1,7 +1,28 @@
 import { Router } from 'express'
+import crypto from 'node:crypto'
 import { supabase } from '../lib/supabase.js'
+import { extractStorageObjects, removeStorageObjects, objKey } from '../lib/storage.js'
 
 const router = Router()
+
+// Set of every Storage object referenced by ANY property currently in memStore.
+// memStore is kept in sync on every write/delete, so this reflects live state.
+function storeReferencedKeys() {
+  const keys = new Set()
+  for (const p of memStore) for (const o of extractStorageObjects(p)) keys.add(objKey(o))
+  return keys
+}
+
+// Remove the Storage objects referenced by `candidateData` (an old/deleted
+// property) — but ONLY those not referenced by any remaining property. This is
+// safe under content-hash dedupe, where one image object may be shared across
+// properties. Best-effort; never throws into the request path.
+async function purgeUnreferenced(candidateData) {
+  const candidates = extractStorageObjects(candidateData)
+  if (!candidates.length) return
+  const keep = storeReferencedKeys()
+  await removeStorageObjects(candidates.filter(o => !keep.has(objKey(o))))
+}
 
 // In-memory cache — warmed from Supabase on startup, kept in sync on every write
 let memStore = []
@@ -40,6 +61,22 @@ async function writeToSupabase(prop) {
   else           memStore.unshift({ ...prop })
 }
 
+// Fetch a single property's full object (for orphan cleanup). Tries Supabase
+// first, falls back to the in-memory cache.
+async function getPropById(id) {
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('properties')
+        .select('id, data, published')
+        .eq('id', Number(id) || id)
+        .maybeSingle()
+      if (!error && data) return rowToPublic(data)
+    } catch {}
+  }
+  return memStore.find(p => String(p.id) === String(id)) || null
+}
+
 async function deleteFromSupabase(id) {
   const { error } = await supabase
     .from('properties')
@@ -73,6 +110,22 @@ export async function preloadFromSupabase() {
   }
 }
 
+// Send a JSON list with public caching + ETag (304 on match). Admins always get
+// fresh data (no-store) since they edit through the same endpoint.
+function sendList(req, res, rows, admin) {
+  if (admin) {
+    res.setHeader('Cache-Control', 'no-store')
+    return res.json(rows)
+  }
+  const body = JSON.stringify(rows)
+  const etag = `"${crypto.createHash('sha1').update(body).digest('base64')}"`
+  res.setHeader('ETag', etag)
+  res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=600')
+  if (req.headers['if-none-match'] === etag) return res.status(304).end()
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  return res.send(body)
+}
+
 // ── GET /api/properties — list all (public: published only; admin: all) ────────
 router.get('/', async (req, res) => {
   const admin = isAdmin(req)
@@ -86,7 +139,7 @@ router.get('/', async (req, res) => {
         const rows = data.map(rowToPublic)
         memStore = [...rows]
         supabaseOk = true
-        return res.json(rows)
+        return sendList(req, res, rows, admin)
       }
       console.error('[properties] GET error:', error.message)
     } catch (e) {
@@ -95,7 +148,7 @@ router.get('/', async (req, res) => {
   }
 
   console.warn('[properties] Serving %d props from memory (Supabase unavailable)', memStore.length)
-  return res.json(memStore.filter(p => admin || p.published !== false))
+  return sendList(req, res, memStore.filter(p => admin || p.published !== false), admin)
 })
 
 // ── GET /api/properties/status — Supabase health (admin) ──────────────────────
@@ -151,9 +204,14 @@ router.put('/:id', requireAdmin, async (req, res) => {
   const id = req.params.id
   const propWithId = { ...prop, id: Number(id) || id, updatedAt: Date.now() }
 
+  // Snapshot the previous version so we can delete any images/files this edit
+  // dropped (best-effort, never blocks the save).
+  const prev = await getPropById(id)
+
   if (supabase) {
     try {
       await writeToSupabase(propWithId)
+      if (prev) purgeUnreferenced(prev).catch(e => console.warn('[properties] orphan cleanup:', e.message))
       console.log('[properties] ✓ Upserted property %s to Supabase (total: %d)', id, memStore.length)
       return res.json({ ok: true, id, storage: 'supabase' })
     } catch (e) {
@@ -173,9 +231,13 @@ router.put('/:id', requireAdmin, async (req, res) => {
 router.delete('/:id', requireAdmin, async (req, res) => {
   const id = req.params.id
 
+  // Grab the property first so we can purge its Storage objects after delete.
+  const prop = await getPropById(id)
+
   if (supabase) {
     try {
       await deleteFromSupabase(id)
+      if (prop) purgeUnreferenced(prop).catch(e => console.warn('[properties] orphan cleanup:', e.message))
       console.log('[properties] ✓ Deleted property %s from Supabase (total: %d)', id, memStore.length)
       return res.json({ ok: true, id, storage: 'supabase' })
     } catch (e) {

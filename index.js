@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
+import compression from 'compression'
 import propertiesRouter, { preloadFromSupabase } from './routes/properties.js'
 import contactsRouter  from './routes/contacts.js'
 import newsRouter      from './routes/news.js'
@@ -114,6 +115,9 @@ app.use(cors({
   credentials: true,
 }))
 
+// gzip/brotli-compress all responses (JSON API payloads especially)
+app.use(compression())
+
 app.use(express.json({ limit: '25mb' }))
 
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: Date.now() }))
@@ -132,7 +136,9 @@ app.use('/api/settings',  settingsRouter)
 // Handle multer errors (e.g., file too large, wrong type)
 app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') {
-    const limit = req.path?.includes('/video') ? '150MB' : '25MB'
+    const limit = req.path?.includes('/video') ? `${process.env.VIDEO_MAX_MB || 150}MB`
+                : req.path?.includes('/image') ? '15MB'
+                : '25MB'
     return res.status(413).json({ error: `File too large — maximum ${limit}` })
   }
   if (err.message?.includes('Only PDF') || err.message?.includes('Only video')) return res.status(415).json({ error: err.message })

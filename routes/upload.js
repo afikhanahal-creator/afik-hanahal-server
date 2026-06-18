@@ -1,8 +1,14 @@
 import { Router } from 'express'
 import { supabase } from '../lib/supabase.js'
 import multer from 'multer'
+import {
+  compressImage, uploadDeduped,
+  IMAGE_BUCKET, VIDEO_BUCKET, PDF_BUCKET, ONE_YEAR_CACHE,
+} from '../lib/storage.js'
 
 const router = Router()
+
+const VIDEO_MAX_MB = Number(process.env.VIDEO_MAX_MB || 150)
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -18,7 +24,7 @@ const upload = multer({
 
 const videoUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 150 * 1024 * 1024 }, // 150MB for videos
+  limits: { fileSize: VIDEO_MAX_MB * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('video/') || /\.(mp4|mov|avi|webm|ogg|mkv)$/i.test(file.originalname)) {
       cb(null, true)
@@ -30,7 +36,7 @@ const videoUpload = multer({
 
 const imageUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB per image
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB per image (pre-compression)
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true)
     else cb(new Error('Only image files are allowed'))
@@ -68,18 +74,22 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Storage not configured — Supabase not connected' })
 
   try {
-    await ensureBucket('property-pdfs', { fileSizeLimit: 25 * 1024 * 1024, allowedMimeTypes: ['application/pdf'] })
+    await ensureBucket(PDF_BUCKET, { fileSizeLimit: 25 * 1024 * 1024, allowedMimeTypes: ['application/pdf'] })
 
     const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')
     const storagePath = `${Date.now()}_${safeName}`
 
     const { error: uploadErr } = await supabase.storage
-      .from('property-pdfs')
-      .upload(storagePath, req.file.buffer, { contentType: 'application/pdf', upsert: false })
+      .from(PDF_BUCKET)
+      .upload(storagePath, req.file.buffer, {
+        contentType: 'application/pdf',
+        cacheControl: ONE_YEAR_CACHE,
+        upsert: true,
+      })
 
     if (uploadErr) throw uploadErr
 
-    const { data: urlData } = supabase.storage.from('property-pdfs').getPublicUrl(storagePath)
+    const { data: urlData } = supabase.storage.from(PDF_BUCKET).getPublicUrl(storagePath)
 
     return res.json({ ok: true, url: urlData.publicUrl, name: req.file.originalname, path: storagePath })
   } catch (e) {
@@ -88,62 +98,91 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
   }
 })
 
-// POST /api/upload/video — stores to Supabase Storage, returns permanent public URL
+// ── Cloudinary video upload (unsigned preset) ─────────────────────────────────
+// Videos are by far the heaviest objects in egress + storage, so we keep them
+// out of Supabase and hand them to Cloudinary's video CDN, which also
+// transcodes/compresses on delivery (q_auto). Returns the same { url } contract.
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME
+const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET
+
+async function uploadVideoToCloudinary(file) {
+  const form = new FormData()
+  form.append('file', new Blob([file.buffer], { type: file.mimetype || 'video/mp4' }), file.originalname)
+  form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET)
+  const endpoint = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`
+  const r = await fetch(endpoint, { method: 'POST', body: form })
+  const json = await r.json().catch(() => ({}))
+  if (!r.ok || !json.secure_url) {
+    throw new Error(json?.error?.message || `Cloudinary upload failed (${r.status})`)
+  }
+  return json.secure_url
+}
+
+// POST /api/upload/video — prefers Cloudinary; never stores video in Supabase
+// unless the ALLOW_SUPABASE_VIDEO escape hatch is explicitly set.
 router.post('/video', videoUpload.single('file'), async (req, res) => {
   if (!isAdmin(req)) return res.status(401).json({ error: 'Unauthorized' })
   if (!req.file) return res.status(400).json({ error: 'No video file provided' })
-  if (!supabase) return res.status(503).json({ error: 'Storage not configured — Supabase not connected' })
 
-  try {
-    await ensureBucket('property-videos', { fileSizeLimit: 150 * 1024 * 1024 })
-
-    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')
-    const storagePath = `${Date.now()}_${safeName}`
-
-    const { error: uploadErr } = await supabase.storage
-      .from('property-videos')
-      .upload(storagePath, req.file.buffer, {
-        contentType: req.file.mimetype || 'video/mp4',
-        upsert: false,
-      })
-
-    if (uploadErr) throw uploadErr
-
-    const { data: urlData } = supabase.storage.from('property-videos').getPublicUrl(storagePath)
-
-    console.log(`[upload video] stored ${storagePath} (${Math.round(req.file.size / 1024)}KB)`)
-    return res.json({ ok: true, url: urlData.publicUrl, name: req.file.originalname })
-  } catch (e) {
-    console.error('[upload video]', e.message)
-    return res.status(500).json({ error: e.message })
+  // Preferred path: Cloudinary
+  if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_UPLOAD_PRESET) {
+    try {
+      const url = await uploadVideoToCloudinary(req.file)
+      console.log(`[upload video] → Cloudinary ${Math.round(req.file.size / 1024)}KB`)
+      return res.json({ ok: true, url, name: req.file.originalname, storage: 'cloudinary' })
+    } catch (e) {
+      console.error('[upload video] cloudinary failed:', e.message)
+      return res.status(502).json({ error: `Cloudinary upload failed: ${e.message}` })
+    }
   }
+
+  // Escape hatch: keep storing in Supabase only if explicitly opted in.
+  if (process.env.ALLOW_SUPABASE_VIDEO === 'true') {
+    if (!supabase) return res.status(503).json({ error: 'Storage not configured — Supabase not connected' })
+    try {
+      await ensureBucket(VIDEO_BUCKET, { fileSizeLimit: VIDEO_MAX_MB * 1024 * 1024 })
+      const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')
+      const storagePath = `${Date.now()}_${safeName}`
+      const { error: uploadErr } = await supabase.storage
+        .from(VIDEO_BUCKET)
+        .upload(storagePath, req.file.buffer, {
+          contentType: req.file.mimetype || 'video/mp4',
+          cacheControl: ONE_YEAR_CACHE,
+          upsert: true,
+        })
+      if (uploadErr) throw uploadErr
+      const { data: urlData } = supabase.storage.from(VIDEO_BUCKET).getPublicUrl(storagePath)
+      console.log(`[upload video] → Supabase ${storagePath} (${Math.round(req.file.size / 1024)}KB)`)
+      return res.json({ ok: true, url: urlData.publicUrl, name: req.file.originalname, storage: 'supabase' })
+    } catch (e) {
+      console.error('[upload video]', e.message)
+      return res.status(500).json({ error: e.message })
+    }
+  }
+
+  // Default: guide the admin to configure Cloudinary instead of bloating Storage.
+  return res.status(501).json({
+    error: 'העלאת וידאו ל-Supabase מושבתת כדי לחסוך באחסון ו-egress. ' +
+           'יש להגדיר CLOUDINARY_CLOUD_NAME ו-CLOUDINARY_UPLOAD_PRESET בשרת ' +
+           '(או להעלות את הסרטון ישירות ל-Cloudinary ולהדביק קישור).',
+  })
 })
 
-// POST /api/upload/image — stores to Supabase Storage property-images, returns permanent public URL
+// POST /api/upload/image — compress (WebP, max 1600px, no EXIF) then store
+// under a content-hash name (dedupe) with a 1-year cache header.
 router.post('/image', imageUpload.single('file'), async (req, res) => {
   if (!isAdmin(req)) return res.status(401).json({ error: 'Unauthorized' })
   if (!req.file) return res.status(400).json({ error: 'No image file provided' })
   if (!supabase) return res.status(503).json({ error: 'Storage not configured — Supabase not connected' })
 
   try {
-    await ensureBucket('property-images', { fileSizeLimit: 15 * 1024 * 1024 })
+    await ensureBucket(IMAGE_BUCKET, { fileSizeLimit: 15 * 1024 * 1024 })
 
-    const ext = (req.file.originalname.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z]/g, '')
-    const storagePath = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
+    const compressed = await compressImage(req.file.buffer)
+    const { url } = await uploadDeduped(IMAGE_BUCKET, compressed, { contentType: 'image/webp', ext: 'webp' })
 
-    const { error: uploadErr } = await supabase.storage
-      .from('property-images')
-      .upload(storagePath, req.file.buffer, {
-        contentType: req.file.mimetype || 'image/jpeg',
-        upsert: false,
-      })
-
-    if (uploadErr) throw uploadErr
-
-    const { data: urlData } = supabase.storage.from('property-images').getPublicUrl(storagePath)
-
-    console.log(`[upload image] stored ${storagePath} (${Math.round(req.file.size / 1024)}KB)`)
-    return res.json({ ok: true, url: urlData.publicUrl, name: req.file.originalname })
+    console.log(`[upload image] ${Math.round(req.file.size / 1024)}KB → ${Math.round(compressed.length / 1024)}KB webp`)
+    return res.json({ ok: true, url, name: req.file.originalname })
   } catch (e) {
     console.error('[upload image]', e.message)
     return res.status(500).json({ error: e.message })
@@ -157,17 +196,12 @@ router.post('/images', imageUpload.array('files', 20), async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Storage not configured' })
 
   try {
-    await ensureBucket('property-images', { fileSizeLimit: 15 * 1024 * 1024 })
+    await ensureBucket(IMAGE_BUCKET, { fileSizeLimit: 15 * 1024 * 1024 })
 
     const results = await Promise.all(req.files.map(async file => {
-      const ext = (file.originalname.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z]/g, '')
-      const storagePath = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
-      const { error } = await supabase.storage
-        .from('property-images')
-        .upload(storagePath, file.buffer, { contentType: file.mimetype || 'image/jpeg', upsert: false })
-      if (error) throw error
-      const { data } = supabase.storage.from('property-images').getPublicUrl(storagePath)
-      return { url: data.publicUrl, name: file.originalname }
+      const compressed = await compressImage(file.buffer)
+      const { url } = await uploadDeduped(IMAGE_BUCKET, compressed, { contentType: 'image/webp', ext: 'webp' })
+      return { url, name: file.originalname }
     }))
 
     console.log(`[upload images] stored ${results.length} images`)
