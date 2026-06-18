@@ -1,9 +1,28 @@
 import { Router } from 'express'
 import crypto from 'node:crypto'
 import { supabase } from '../lib/supabase.js'
-import { cleanupOrphans } from '../lib/storage.js'
+import { extractStorageObjects, removeStorageObjects, objKey } from '../lib/storage.js'
 
 const router = Router()
+
+// Set of every Storage object referenced by ANY property currently in memStore.
+// memStore is kept in sync on every write/delete, so this reflects live state.
+function storeReferencedKeys() {
+  const keys = new Set()
+  for (const p of memStore) for (const o of extractStorageObjects(p)) keys.add(objKey(o))
+  return keys
+}
+
+// Remove the Storage objects referenced by `candidateData` (an old/deleted
+// property) — but ONLY those not referenced by any remaining property. This is
+// safe under content-hash dedupe, where one image object may be shared across
+// properties. Best-effort; never throws into the request path.
+async function purgeUnreferenced(candidateData) {
+  const candidates = extractStorageObjects(candidateData)
+  if (!candidates.length) return
+  const keep = storeReferencedKeys()
+  await removeStorageObjects(candidates.filter(o => !keep.has(objKey(o))))
+}
 
 // In-memory cache — warmed from Supabase on startup, kept in sync on every write
 let memStore = []
@@ -192,7 +211,7 @@ router.put('/:id', requireAdmin, async (req, res) => {
   if (supabase) {
     try {
       await writeToSupabase(propWithId)
-      if (prev) cleanupOrphans(prev, propWithId).catch(e => console.warn('[properties] orphan cleanup:', e.message))
+      if (prev) purgeUnreferenced(prev).catch(e => console.warn('[properties] orphan cleanup:', e.message))
       console.log('[properties] ✓ Upserted property %s to Supabase (total: %d)', id, memStore.length)
       return res.json({ ok: true, id, storage: 'supabase' })
     } catch (e) {
@@ -218,7 +237,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
   if (supabase) {
     try {
       await deleteFromSupabase(id)
-      if (prop) cleanupOrphans(prop).catch(e => console.warn('[properties] orphan cleanup:', e.message))
+      if (prop) purgeUnreferenced(prop).catch(e => console.warn('[properties] orphan cleanup:', e.message))
       console.log('[properties] ✓ Deleted property %s from Supabase (total: %d)', id, memStore.length)
       return res.json({ ok: true, id, storage: 'supabase' })
     } catch (e) {

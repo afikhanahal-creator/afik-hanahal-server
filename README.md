@@ -34,8 +34,10 @@ photo is never stored twice.
 ### 4. Orphan cleanup
 The property `data` blob is scanned for Supabase Storage URLs. On
 `DELETE /api/properties/:id` those objects are removed from Storage; on
-`PUT /api/properties/:id` any image/PDF the edit dropped is removed. Cleanup is
-best-effort and never blocks the write.
+`PUT /api/properties/:id` any image/PDF the edit dropped is removed. The cleanup
+is **dedupe-aware**: because identical images share one content-hash object
+(see #3), an object is only deleted if **no other property still references it**.
+Best-effort — never blocks the write.
 
 ### 5. Videos go to Cloudinary, not Supabase (`/api/upload/video`)
 Videos are the heaviest objects, so they are not stored in Supabase Storage:

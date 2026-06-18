@@ -136,7 +136,9 @@ app.use('/api/settings',  settingsRouter)
 // Handle multer errors (e.g., file too large, wrong type)
 app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') {
-    const limit = req.path?.includes('/video') ? '150MB' : '25MB'
+    const limit = req.path?.includes('/video') ? `${process.env.VIDEO_MAX_MB || 150}MB`
+                : req.path?.includes('/image') ? '15MB'
+                : '25MB'
     return res.status(413).json({ error: `File too large — maximum ${limit}` })
   }
   if (err.message?.includes('Only PDF') || err.message?.includes('Only video')) return res.status(415).json({ error: err.message })
