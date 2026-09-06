@@ -113,6 +113,11 @@ function isAllowed(origin) {
 app.use(cors({
   origin: (origin, cb) => isAllowed(origin) ? cb(null, true) : cb(new Error(`CORS: ${origin} not allowed`)),
   credentials: true,
+  // Let the browser read the ETag so the admin panel can poll with If-None-Match and get an
+  // empty 304 when nothing changed (Express generates the ETag; this keeps Render egress low).
+  exposedHeaders: ['ETag'],
+  // Cache the CORS preflight for a day so each poll is one request, not two.
+  maxAge: 86400,
 }))
 
 // gzip/brotli-compress all responses (JSON API payloads especially)
