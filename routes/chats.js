@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { supabase }      from '../lib/supabase.js'
-import { toIntlPhone, saveChatMessage } from '../lib/chats.js'
+import { toIntlPhone, saveChatMessage, cacheGet, cacheSet } from '../lib/chats.js'
 
 const router = Router()
 
@@ -39,6 +39,7 @@ router.get('/status', requireAdmin, async (req, res) => {
 router.get('/conversations', requireAdmin, async (req, res) => {
   try {
     if (!supabase) return res.json([])
+    const hit = cacheGet('conversations'); if (hit) return res.json(hit)
     const { data, error } = await supabase
       .from('chats')
       .select('phone, direction, message, created_at')
@@ -58,7 +59,8 @@ router.get('/conversations', requireAdmin, async (req, res) => {
         })
       }
     }
-    return res.json([...map.values()])
+    const out = [...map.values()]; cacheSet('conversations', out)
+    return res.json(out)
   } catch (e) {
     console.warn('[chats/conversations]', e.message)
     return res.json([])
@@ -70,6 +72,7 @@ router.get('/:phone', requireAdmin, async (req, res) => {
   const phone = toIntlPhone(req.params.phone) || req.params.phone
   try {
     if (!supabase) return res.json([])
+    const hit = cacheGet(`phone:${phone}`); if (hit) return res.json(hit)
     const { data, error } = await supabase
       .from('chats')
       .select('*')
@@ -77,6 +80,7 @@ router.get('/:phone', requireAdmin, async (req, res) => {
       .order('created_at', { ascending: true })
       .limit(300)
     if (error) throw error
+    cacheSet(`phone:${phone}`, data || [])
     return res.json(data || [])
   } catch (e) {
     console.warn('[chats GET]', e.message)
