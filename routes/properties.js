@@ -103,7 +103,7 @@ export async function preloadFromSupabase() {
       .order('created_at', { ascending: false })
     if (error) { console.error('[properties] Startup read FAILED:', error.message); return }
     memStore = data.map(rowToPublic)
-    supabaseOk = true
+    supabaseOk = true; lastListRefresh = Date.now()
     console.log('[properties] ✓ Loaded %d properties from Supabase on startup', memStore.length)
   } catch (e) {
     console.error('[properties] Startup exception:', e.message)
@@ -127,27 +127,32 @@ function sendList(req, res, rows, admin) {
 }
 
 // ── GET /api/properties — list all (public: published only; admin: all) ────────
+// Every write goes through this server and updates memStore, so memory is the truth while the
+// process lives. Supabase is re-read at most every 5 minutes (safety net for a restart elsewhere)
+// instead of on every request: the admin panel polls this list constantly, and each read used to
+// pull the whole table out of Supabase — that is metered egress on the free tier.
+const LIST_REFRESH_MS = 5 * 60 * 1000
+let lastListRefresh = 0, listRefreshing = null
+async function refreshFromSupabase(force = false) {
+  if (!supabase) return false
+  if (!force && Date.now() - lastListRefresh < LIST_REFRESH_MS) return true
+  if (listRefreshing) return listRefreshing
+  listRefreshing = (async () => {
+    try {
+      const { data, error } = await supabase.from('properties').select('id, data, published, created_at').order('created_at', { ascending: false })
+      if (error) { console.error('[properties] refresh error:', error.message); return false }
+      memStore = data.map(rowToPublic); supabaseOk = true; lastListRefresh = Date.now()
+      return true
+    } catch (e) { console.error('[properties] refresh exception:', e.message); return false }
+    finally { listRefreshing = null }
+  })()
+  return listRefreshing
+}
 router.get('/', async (req, res) => {
   const admin = isAdmin(req)
-
-  if (supabase) {
-    try {
-      let q = supabase.from('properties').select('id, data, published, created_at')
-      if (!admin) q = q.eq('published', true)
-      const { data, error } = await q.order('created_at', { ascending: false })
-      if (!error) {
-        const rows = data.map(rowToPublic)
-        memStore = [...rows]
-        supabaseOk = true
-        return sendList(req, res, rows, admin)
-      }
-      console.error('[properties] GET error:', error.message)
-    } catch (e) {
-      console.error('[properties] GET exception:', e.message)
-    }
-  }
-
-  console.warn('[properties] Serving %d props from memory (Supabase unavailable)', memStore.length)
+  const warm = memStore.length > 0 && lastListRefresh > 0
+  if (!warm) await refreshFromSupabase(true)
+  else if (Date.now() - lastListRefresh >= LIST_REFRESH_MS) refreshFromSupabase().catch(() => {})   // in the background; serve memory now
   return sendList(req, res, memStore.filter(p => admin || p.published !== false), admin)
 })
 
